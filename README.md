@@ -94,10 +94,17 @@ Minimum required values:
 
 ```bash
 POSTGRES_USER=gym
-POSTGRES_PASSWORD=change_me_strong
+POSTGRES_PASSWORD=change_me_strong        # 8+ characters, the app refuses to start with a weak one
 POSTGRES_DB=gymdb
-JWT_SECRET=paste_a_long_random_string_here
+JWT_SECRET=paste_a_long_random_string_here  # 32+ random characters (required)
+
+# First admin account — created automatically once, when no admin exists
+BOOTSTRAP_ADMIN_EMAIL=you@example.com
+BOOTSTRAP_ADMIN_PASSWORD=your_strong_password   # 8+ characters
 ```
+
+Tip — generate a strong `JWT_SECRET` with:
+`node -e "console.log(require('crypto').randomBytes(48).toString('hex'))"`
 
 Optional (fill only if you want those features online):
 
@@ -136,24 +143,16 @@ Open in a browser: **http://localhost:2311**
 
 ## First Login (admin)
 
-| URL                              | What it is                    |
-|----------------------------------|-------------------------------|
-| `http://localhost:2311`          | Main app                      |
-| `http://jainifitness.test`       | Member/admin site (dev alias) |
-| `http://admin.jainifitness.test` | Admin login (dev alias)       |
+| URL                        | What it is                    |
+|----------------------------|-------------------------------|
+| `http://localhost:2311`    | Main app (admin and members)  |
 
-The `.jainifitness.test` aliases need a hosts entry (`/etc/hosts` inside WSL/Linux):
+The app decides between the admin panel and the member dashboard from the
+logged-in user's role — there are no separate admin URLs anymore.
 
-```bash
-sudo sh -c 'echo "127.0.0.1 jainifitness.test admin.jainifitness.test" >> /etc/hosts'
-```
-
-Admin credentials (created automatically by `database/schema.sql` on first start):
-
-- Email: `admin@gym.com`
-- Password: `admin123`
-
-⚠️ **First task:** change the admin password using the **Password** button in the top bar.
+Admin credentials come from the `BOOTSTRAP_ADMIN_EMAIL` / `BOOTSTRAP_ADMIN_PASSWORD`
+values you set in `.env` (created automatically on first start until you log in).
+They no longer exist, since seeded/default passwords are a security risk.
 
 ---
 
@@ -206,12 +205,16 @@ Not committed to git — always create it from `.env.example`.
 
 | Variable | Used for |
 |----------|----------|
-| `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB` | database |
-| `JWT_SECRET` | login-token signing (long random string) |
+| `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB` | database (password 8+ chars, required strong) |
+| `JWT_SECRET` | login-token signing (32+ chars, required strong) |
+| `NODE_ENV` | `production` on a live server (adds the Secure cookie flag) |
+| `FRONTEND_ORIGINS` | allowed browser origins (comma-separated; empty = `APP_URL` only) |
+| `BOOTSTRAP_ADMIN_EMAIL` / `BOOTSTRAP_ADMIN_PASSWORD` | first admin account (created once) |
 | `RAZORPAY_KEY_ID` / `RAZORPAY_KEY_SECRET` | online payments (test mode: `rzp_test_...`) |
+| `RAZORPAY_WEBHOOK_SECRET` | Razorpay webhook signature check (dashboard → Webhooks) |
 | `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASS` / `SMTP_FROM` | email notifications |
 | `WHATSAPP_TOKEN` / `WHATSAPP_PHONE_ID` | WhatsApp confirmations |
-| `APP_URL` | the public address put inside messages |
+| `APP_URL` | the public address put inside messages (e.g. password-reset links) |
 
 ---
 
@@ -236,17 +239,18 @@ Not committed to git — always create it from `.env.example`.
 **self-hosted runner** runs on the target machine and does:
 
 1. `git pull --ff-only origin main`
-2. `docker compose up -d --build` (rebuild + restart)
-3. Health check: `curl http://localhost:2311/api/health` (warning only if it fails)
+2. Backup the database (`pg_dump` saved into `backups/`, last 15 kept)
+3. `docker compose up -d --build` (rebuild + restart)
+4. Health check: `curl http://localhost:2311/api/health` (warning only if it fails)
 
 ### One-time runner setup (on the machine that should auto-deploy)
 
 ```bash
-# 1. Download the runner (version pinned in repo)
+# 1. Download the runner (GitHub rejects older versions with a 404 — use the latest)
 mkdir -p ~/actions-runner && cd ~/actions-runner
-curl -o actions-runner-linux-x64-2.328.0.tar.gz -L \
-  https://github.com/actions/runner/releases/download/v2.328.0/actions-runner-linux-x64-2.328.0.tar.gz
-tar -xzf actions-runner-linux-x64-2.328.0.tar.gz
+curl -o runner.tar.gz -L --retry 10 --retry-all-errors \
+  https://github.com/actions/runner/releases/latest/download/actions-runner-linux-x64-2.338.0.tar.gz
+tar -xzf runner.tar.gz
 
 # 2. Create a registration token in GitHub:
 #    Repo → Settings → Actions → Runners → New self-hosted runner → shows the same commands
