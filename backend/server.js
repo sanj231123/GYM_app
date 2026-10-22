@@ -204,6 +204,12 @@ async function init() {
   }
 }
 
+// ---------- health ----------
+app.get('/api/health', async (req, res) => {
+  try { await pool.query('SELECT 1'); res.json({ ok: true }) }
+  catch (e) { res.status(500).json({ ok: false, error: e.message }) }
+})
+
 // ---------- auth routes ----------
 app.post('/api/auth/login', async (req, res) => {
   try {

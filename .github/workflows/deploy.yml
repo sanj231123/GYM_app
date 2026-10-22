@@ -1,0 +1,27 @@
+name: Deploy (self-hosted runner)
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: self-hosted
+    timeout-minutes: 15
+    steps:
+      - name: Pull latest code
+        working-directory: /home/sanjayprajapati/gym-app
+        run: git pull --ff-only origin main
+
+      - name: Rebuild and restart containers
+        working-directory: /home/sanjayprajapati/gym-app
+        run: docker compose up -d --build
+
+      - name: Health check
+        if: always()
+        run: sleep 5; curl -fsS http://localhost:2311/api/health || echo "::warning::Health check failed — check ./logs.sh backend"
