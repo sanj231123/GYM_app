@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react'
-import { setToken, getToken, login, register, me, routeByRole, changePassword, get, post, put, del } from './api'
+import { login, register, logout, me, changePassword, forgotPassword, resetPassword, get, post, put, del } from './api'
 
 // shows a friendly page on any render crash instead of a blank white screen
 class AppBoundary extends React.Component {
@@ -42,20 +42,19 @@ function statusOf(exp) {
 // ---------- App ----------
 export default function App() {
   const [user, setUser] = useState(null)
-  const [loading, setLoading] = useState(!!getToken())
+  const [loading, setLoading] = useState(true)
   const joinNow = (() => {
     try { return new URLSearchParams(location.search).get('page') === 'join' } catch { return false }
   })()
 
   useEffect(() => {
-    if (!getToken()) return setLoading(false)
-    me().then(u => { if (routeByRole(u)) return; setUser(u) }).catch(() => setToken('')).finally(() => setLoading(false))
+    me().then(setUser).catch(() => {}).finally(() => setLoading(false))
   }, [])
 
-  const onLogout = () => { setToken(''); setUser(null) }
+  const onLogout = () => { logout().catch(() => {}); setUser(null) }
   const changePwd = async () => {
-    const p = window.prompt('New password (min 6 characters)')
-    if (!p) return
+    const p = window.prompt('New password (min 8 characters)')
+    if (!p || p.length < 8) { if (p) alert('Password must be at least 8 characters'); return }
     try { await changePassword(p); alert('Password changed ✅') } catch (e) { alert(e.message) }
   }
 
@@ -272,7 +271,7 @@ const JOIN_URL = '/?page=join'
 function JoinPage() {
   const [user, setUser] = useState(null)
   useEffect(() => {
-    if (getToken()) me().then(setUser).catch(() => {})
+    me().then(setUser).catch(() => {})
   }, [])
   const prePlan = typeof location !== 'undefined' ? new URLSearchParams(location.search).get('plan') : null
   const [plans, setPlans] = useState([])
@@ -339,7 +338,7 @@ function JoinPage() {
 
   return (
     <div className="af-site">
-      <SiteNav user={user} onLogout={() => { setToken(''); setUser(null) }} />
+      <SiteNav user={user} onLogout={() => { logout().catch(() => {}); setUser(null) }} />
       <section id="top" className="sec join-top">
         <span className="sec-kicker">JOIN JAINI FITNESS</span>
         <h2 className="sec-title">Membership Inquiry</h2>
@@ -484,24 +483,52 @@ function JumpStrip() {
   )
 }
 
-// ---------- Login / Register (marketing site + card) ----------
+// ---------- Login / Register / Forgot / Reset (marketing site + card) ----------
 function Auth({ onLogin }) {
-  const [open, setOpen] = useState(false)
-  const [mode, setMode] = useState('login')
+  const [open, setOpen] = useState(() => {
+    try {
+      const sp = new URLSearchParams(location.search)
+      return !!(sp.get('reset') || sp.get('forgot') != null)
+    } catch { return false }
+  })
+  const [mode, setMode] = useState(() => {
+    try {
+      const sp = new URLSearchParams(location.search)
+      if (sp.get('reset')) return 'reset'
+      if (sp.get('forgot') != null) return 'forgot'
+    } catch {}
+    return 'login'
+  })
   const [f, setF] = useState({ name: '', email: '', phone: '', password: '' })
   const [err, setErr] = useState('')
+  const [ok, setOk] = useState('')
   const [busy, setBusy] = useState(false)
+  const resetToken = (() => {
+    try { return new URLSearchParams(location.search).get('reset') } catch { return null }
+  })()
 
   const submit = async (e) => {
     e.preventDefault()
-    setErr(''); setBusy(true)
+    setErr(''); setOk(''); setBusy(true)
     try {
-      const r = mode === 'login'
-        ? await login(f.email, f.password)
-        : await register({ name: f.name, email: f.email, phone: f.phone, password: f.password })
-      setToken(r.token)
-      if (routeByRole(r.user)) return
-      onLogin(r.user)
+      if (mode === 'login') {
+        const r = await login(f.email, f.password)
+        onLogin(r.user)
+      } else if (mode === 'register') {
+        if (f.password && f.password.length < 8) throw new Error('Password must be at least 8 characters')
+        const r = await register({ name: f.name, email: f.email, phone: f.phone, password: f.password })
+        onLogin(r.user)
+      } else if (mode === 'forgot') {
+        await forgotPassword(f.email)
+        setOk('If that email exists, a reset link has been sent. Please check your email / gym notices.')
+        setMode('login')
+      } else if (mode === 'reset') {
+        if (f.password.length < 8) throw new Error('Password must be at least 8 characters')
+        await resetPassword(resetToken, f.password)
+        setOk('Password updated ✅ You can login now.')
+        if (typeof location !== 'undefined' && location.search) history.replaceState(null, '', location.pathname)
+        setMode('login')
+      }
     } catch (e) { setErr(e.message) } finally { setBusy(false) }
   }
 
@@ -516,17 +543,20 @@ function Auth({ onLogin }) {
           <div className="af-card">
             {!open ? (
               <div className="gate">
-                <h3 className="gate-title">{typeof location !== 'undefined' && location.hostname === 'admin.jainifitness.test' ? 'ADMIN LOGIN' : 'MEMBER LOGIN'}</h3>
+                <h3 className="gate-title">MEMBER LOGIN</h3>
                 <button className="af-cta w100" onClick={() => setOpen(true)}>LOGIN NOW</button>
               </div>
             ) : (
               <>
-                <h3>Member Area</h3>
-                <div className="auth-tabs">
-                  <button className={mode === 'login' ? 'tab active' : 'tab'} onClick={() => setMode('login')}>Login</button>
-                  <button className={mode === 'register' ? 'tab active' : 'tab'} onClick={() => setMode('register')}>New Member</button>
-                </div>
+                <h3>{mode === 'forgot' ? 'Forgot Password' : mode === 'reset' ? 'Set New Password' : 'Member Area'}</h3>
+                {(mode === 'login' || mode === 'register') && (
+                  <div className="auth-tabs">
+                    <button className={mode === 'login' ? 'tab active' : 'tab'} onClick={() => setMode('login')}>Login</button>
+                    <button className={mode === 'register' ? 'tab active' : 'tab'} onClick={() => setMode('register')}>New Member</button>
+                  </div>
+                )}
                 {err && <p className="error">{err}</p>}
+                {ok && <p className="muted" style={{ color: '#1e8e3e' }}>{ok}</p>}
                 <form onSubmit={submit} className="form">
                   {mode === 'register' && (
                     <>
@@ -534,9 +564,22 @@ function Auth({ onLogin }) {
                       <input className="inp" placeholder="Phone (optional)" value={f.phone} onChange={e => setF({ ...f, phone: e.target.value })} />
                     </>
                   )}
-                  <input className="inp" type="email" placeholder="Email" value={f.email} onChange={e => setF({ ...f, email: e.target.value })} />
-                  <input className="inp" type="password" placeholder="Password" value={f.password} onChange={e => setF({ ...f, password: e.target.value })} />
-                  <button className="btn primary" disabled={busy}>{mode === 'login' ? 'Login' : 'Create Account'}</button>
+                  {(mode === 'login' || mode === 'register' || mode === 'forgot') && (
+                    <input className="inp" type="email" placeholder="Email" value={f.email} onChange={e => setF({ ...f, email: e.target.value })} required />
+                  )}
+                  {mode !== 'forgot' && (
+                    <input className="inp" type="password" placeholder={mode === 'reset' ? 'New password (min 8 characters)' : 'Password'} value={f.password} onChange={e => setF({ ...f, password: e.target.value })} required={mode !== 'login'} />
+                  )}
+                  <button className="btn primary" disabled={busy}>
+                    {mode === 'login' ? 'Login' : mode === 'register' ? 'Create Account' : mode === 'forgot' ? 'Send Reset Link' : 'Update Password'}
+                  </button>
+                  <div className="row" style={{ justifyContent: 'space-between', gap: 8 }}>
+                    {mode !== 'forgot' && mode !== 'reset' ? (
+                      <button type="button" className="link-btn" onClick={() => { setMode('forgot'); setErr(''); setOk('') }}>Forgot password?</button>
+                    ) : (
+                      <button type="button" className="link-btn" onClick={() => { setMode('login'); setErr(''); setOk('') }}>Back to login</button>
+                    )}
+                  </div>
                 </form>
               </>
             )}
@@ -644,7 +687,8 @@ function Members() {
         await put('/members/' + editId, body)
         if (f.password) await put('/members/' + editId + '/password', { password: f.password })
       } else {
-        body.password = f.password || 'gym123'
+        if (!f.password || f.password.length < 6) { alert('Please set a login password for the member (min 6 characters).'); return }
+        body.password = f.password
         await post('/members', body)
       }
       setF(blank); setEditId(null); setShowForm(false); load()
@@ -699,7 +743,7 @@ function Members() {
             <input className="inp" placeholder="Name *" value={f.name} onChange={e => setF({ ...f, name: e.target.value })} required />
             <input className="inp" placeholder="Phone" value={f.phone} onChange={e => setF({ ...f, phone: e.target.value })} />
             <input className="inp" placeholder="Email (for login)" value={f.email} onChange={e => setF({ ...f, email: e.target.value })} />
-            <input className="inp" placeholder={editId ? 'New password (leave empty to keep old)' : 'Password (default: gym123)'} value={f.password} onChange={e => setF({ ...f, password: e.target.value })} />
+            <input className="inp" type="password" placeholder={editId ? 'New password (leave empty to keep old)' : 'Login password * (min 6 chars)'} value={f.password} onChange={e => setF({ ...f, password: e.target.value })} />
             <select className="inp" value={f.plan_id} onChange={e => setF({ ...f, plan_id: e.target.value })}>
               <option value="">Select plan</option>
               {plans.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}

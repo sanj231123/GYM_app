@@ -18,6 +18,14 @@ jobs:
         working-directory: /home/sanjayprajapati/gym-app
         run: git pull --ff-only origin main
 
+      - name: Backup database before deploy
+        working-directory: /home/sanjayprajapati/gym-app
+        run: |
+          mkdir -p backups
+          ts=$(date +%Y%m%d-%H%M%S)
+          docker compose exec -T db pg_dump -U gym gymdb > "backups/pre-deploy-$ts.sql" && echo "Saved backups/pre-deploy-$ts.sql" || echo "::warning::pg_dump failed — deploying anyway"
+          ls -1t backups/pre-deploy-*.sql 2>/dev/null | tail -n +15 | xargs -r rm -f
+
       - name: Rebuild and restart containers
         working-directory: /home/sanjayprajapati/gym-app
         run: docker compose up -d --build

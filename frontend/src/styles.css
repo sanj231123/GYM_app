@@ -717,3 +717,10 @@ body {
 .plans-pay-band .panel ul.list { flex: 1 1 auto; }
 .plans-pay-band .muted { color: #b9cdf5; }
 @media (max-width: 1400px) { .dash-right-band .grid3 { grid-template-columns: 1fr 1fr; } }
+
+/* forgot-password link under the auth form */
+.link-btn {
+  background: none; border: 0; padding: 0; margin: 0; cursor: pointer;
+  color: var(--primary, #2563eb); font-size: 13px; font-weight: 600;
+}
+.link-btn:hover { text-decoration: underline; }

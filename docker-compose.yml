@@ -16,8 +16,13 @@ services:
     env_file: .env
     environment:
       DATABASE_URL: postgres://${POSTGRES_USER:-gym}:${POSTGRES_PASSWORD:-gym123}@db:5432/${POSTGRES_DB:-gymdb}
-      JWT_SECRET: ${JWT_SECRET:-gymfit_dev_secret_change_me}
+      JWT_SECRET: ${JWT_SECRET:-local_dev_secret_only_jaini_fitness_0123456789}
       APP_URL: ${APP_URL:-http://localhost:2311}
+      NODE_ENV: ${NODE_ENV:-development}
+      FRONTEND_ORIGINS: ${FRONTEND_ORIGINS:-http://localhost:2311,http://jainifitness.test}
+      BOOTSTRAP_ADMIN_EMAIL: ${BOOTSTRAP_ADMIN_EMAIL:-}
+      BOOTSTRAP_ADMIN_PASSWORD: ${BOOTSTRAP_ADMIN_PASSWORD:-}
+      RAZORPAY_WEBHOOK_SECRET: ${RAZORPAY_WEBHOOK_SECRET:-}
     depends_on:
       - db
     restart: unless-stopped

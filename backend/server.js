@@ -1,23 +1,46 @@
 // GymFit backend API
 const express = require('express');
 const cors = require('cors');
+const helmet = require('helmet');
+const morgan = require('morgan');
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
-const { Pool, types } = require('pg');
 const nodemailer = require('nodemailer');
 const crypto = require('crypto');
+const { pool } = require('./db');
+const {
+  auth, adminOnly, setAuthCookie, clearAuthCookie,
+  globalLimiter, authLimiter, inquiryLimiter, razorpayLimiter,
+  notFound, errorHandler,
+} = require('./middleware');
+
+const isProd = process.env.NODE_ENV === 'production';
+
+// ---------- fail-fast on weak/missing secrets (prevents dev-default in prod) ----------
+const JWT_SECRET = process.env.JWT_SECRET || '';
+if (!JWT_SECRET || JWT_SECRET.length < 32 || JWT_SECRET.includes('change')) {
+  console.error('FATAL: strong JWT_SECRET (32+ chars) is required in .env');
+  process.exit(1);
+}
+const PG_PASS = process.env.POSTGRES_PASSWORD || '';
+if (!PG_PASS || PG_PASS.length < 8 || PG_PASS.includes('change')) {
+  console.error('FATAL: strong POSTGRES_PASSWORD (8+ chars) is required in .env');
+  process.exit(1);
+}
 
 const APP_URL = process.env.APP_URL || 'http://localhost:2311';
 
-// DATE columns (oid 1082) arrive as plain strings, avoiding timezone conversion
-types.setTypeParser(1082, (v) => v);
-
-const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 const app = express();
-const JWT_SECRET = process.env.JWT_SECRET || 'gymfit_dev_secret_change_me';
 const PORT = process.env.PORT || 3000;
 
-app.use(cors());
+// CORS: same-origin in production (nginx proxies /api), allow-list for dev tools
+const FRONTEND_ORIGINS = (process.env.FRONTEND_ORIGINS || APP_URL).split(',').map(s => s.trim());
+app.use(cors({ origin: FRONTEND_ORIGINS, credentials: true }));
+
+app.set('trust proxy', 1); // behind nginx/caddy
+app.use(helmet({ contentSecurityPolicy: false })); // CSP relaxed: inline styles + Razorpay checkout script
+app.use(morgan(':date[iso] :method :url :status :response-time ms'));
+app.use(globalLimiter);
 app.use(express.json({ limit: '3mb' }));
 
 // ---------- helpers ----------
@@ -25,21 +48,6 @@ const publicUser = (u) => ({
   id: u.id, name: u.name, email: u.email, phone: u.phone, role: u.role,
   plan_id: u.plan_id, trainer_id: u.trainer_id, join_date: u.join_date, expiry_date: u.expiry_date,
 });
-
-function auth(req, res, next) {
-  const h = req.headers.authorization || '';
-  const token = h.startsWith('Bearer ') ? h.slice(7) : '';
-  if (!token) return res.status(401).json({ error: 'Please login first' });
-  try {
-    req.user = jwt.verify(token, JWT_SECRET);
-  } catch {
-    return res.status(401).json({ error: 'Session expired, please login again' });
-  }
-  next();
-}
-
-const adminOnly = (req, res, next) =>
-  req.user.role === 'admin' ? next() : res.status(403).json({ error: 'Admin access required' });
 
 // ---------- notifications (email + WhatsApp) ----------
 // Set these in .env:
@@ -183,14 +191,32 @@ async function init() {
   await pool.query(`ALTER TABLE inquiries ADD COLUMN IF NOT EXISTS plan_id INT`);
   await pool.query(`ALTER TABLE inquiries ADD COLUMN IF NOT EXISTS pay_mode TEXT`);
 
-  // default admin
-  const admin = await pool.query(`SELECT id FROM users WHERE email='admin@gym.com'`);
-  if (!admin.rows.length) {
-    const hash = await bcrypt.hash('admin123', 10);
+  // one-time-use password reset tokens
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS password_resets (
+      id SERIAL PRIMARY KEY,
+      user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      token_hash TEXT NOT NULL,
+      expires_at TIMESTAMPTZ NOT NULL,
+      used BOOLEAN NOT NULL DEFAULT false,
+      created_at TIMESTAMPTZ DEFAULT now()
+    )`);
+
+  // bootstrap admin (no hardcoded credentials) — created once from env on first run
+  const anyAdmin = await pool.query(`SELECT id FROM users WHERE role='admin' LIMIT 1`);
+  if (!anyAdmin.rows.length) {
+    const BOOT_EMAIL = (process.env.BOOTSTRAP_ADMIN_EMAIL || '').toLowerCase().trim();
+    const BOOT_PASS = process.env.BOOTSTRAP_ADMIN_PASSWORD || '';
+    if (!BOOT_EMAIL || BOOT_PASS.length < 8) {
+      console.error('FATAL: no admin exists and BOOTSTRAP_ADMIN_EMAIL / BOOTSTRAP_ADMIN_PASSWORD (8+ chars) are not set');
+      process.exit(1);
+    }
+    const bootHash = await bcrypt.hash(BOOT_PASS, 12);
     await pool.query(
-      `INSERT INTO users (name, email, password_hash, role) VALUES ('Admin','admin@gym.com',$1,'admin')`,
-      [hash]
+      `INSERT INTO users (name, email, password_hash, role) VALUES ('Admin',$1,$2,'admin')`,
+      [BOOT_EMAIL, bootHash]
     );
+    console.log('Bootstrap admin created:', BOOT_EMAIL, '— change this password after first login');
   }
   // default plans
   const plans = await pool.query('SELECT count(*)::int AS c FROM plans');
@@ -211,7 +237,7 @@ app.get('/api/health', async (req, res) => {
 })
 
 // ---------- auth routes ----------
-app.post('/api/auth/login', async (req, res) => {
+app.post('/api/auth/login', authLimiter, async (req, res) => {
   try {
     const { email, password } = req.body;
     const r = await pool.query('SELECT * FROM users WHERE email=$1', [(email || '').toLowerCase().trim()]);
@@ -220,16 +246,18 @@ app.post('/api/auth/login', async (req, res) => {
       return res.status(401).json({ error: 'Wrong email or password' });
     }
     const token = jwt.sign({ id: u.id, role: u.role }, JWT_SECRET, { expiresIn: '7d' });
+    setAuthCookie(res, token); // HttpOnly cookie is the primary storage from now on
     res.json({ token, user: publicUser(u) });
   } catch (e) {
     console.error(e); res.status(500).json({ error: 'Server error' });
   }
 });
 
-app.post('/api/auth/register', async (req, res) => {
+app.post('/api/auth/register', authLimiter, async (req, res) => {
   try {
     const { name, email, phone, password } = req.body;
     if (!name || !email || !password) return res.status(400).json({ error: 'Name, email and password are required' });
+    if (String(password).length < 8) return res.status(400).json({ error: 'Password must be at least 8 characters' });
     const d = await pool.query('SELECT id FROM users WHERE email=$1', [email.toLowerCase().trim()]);
     if (d.rows.length) return res.status(400).json({ error: 'This email already exists, please login' });
     const hash = await bcrypt.hash(password, 10);
@@ -239,10 +267,63 @@ app.post('/api/auth/register', async (req, res) => {
       [name.trim(), email.toLowerCase().trim(), phone || null, hash]
     );
     const token = jwt.sign({ id: r.rows[0].id, role: r.rows[0].role }, JWT_SECRET, { expiresIn: '7d' });
+    setAuthCookie(res, token);
     res.json({ token, user: publicUser(r.rows[0]) });
   } catch (e) {
     console.error(e); res.status(500).json({ error: 'Server error' });
   }
+});
+
+app.post('/api/auth/logout', (req, res) => {
+  clearAuthCookie(res);
+  res.json({ ok: true });
+});
+
+// ---------- forgot / reset password ----------
+app.post('/api/auth/forgot', authLimiter, async (req, res) => {
+  try {
+    const { email } = req.body;
+    // always answer ok — never reveal whether an email is registered
+    res.json({ ok: true });
+    if (!email) return;
+    const u = await pool.query('SELECT id FROM users WHERE email=$1', [String(email).toLowerCase().trim()]);
+    if (!u.rows.length) return;
+    const rawToken = crypto.randomBytes(32).toString('hex');
+    const tokenHash = crypto.createHash('sha256').update(rawToken).digest('hex');
+    await pool.query(
+      `DELETE FROM password_resets WHERE user_id=$1 AND used=false`,
+      [u.rows[0].id]
+    );
+    await pool.query(
+      `INSERT INTO password_resets (user_id, token_hash, expires_at) VALUES ($1,$2, now() + interval '1 hour')`,
+      [u.rows[0].id, tokenHash]
+    );
+    const link = APP_URL + '/?reset=' + rawToken;
+    const msg = `Password reset requested for your account.\nOpen this link within 1 hour to set a new password:\n${link}`;
+    // SMTP set -> email direct; SMTP not set -> saved as a "ready" notification so the admin can hand over the link
+    const r = await sendEmail(String(email).toLowerCase().trim(), 'Password reset link', msg);
+    await logNotif(u.rows[0].id, 'email', String(email).toLowerCase().trim(), 'Password reset link', msg, r.status, r.error);
+  } catch (e) { console.error(e); }
+});
+
+app.post('/api/auth/reset', authLimiter, async (req, res) => {
+  try {
+    const { token, password } = req.body;
+    if (!token || !password) return res.status(400).json({ error: 'Token and password are required' });
+    if (String(password).length < 8) return res.status(400).json({ error: 'Password must be at least 8 characters' });
+    const tokenHash = crypto.createHash('sha256').update(String(token)).digest('hex');
+    const r = await pool.query(
+      `SELECT pr.*, u.id AS uid FROM password_resets pr
+       JOIN users u ON u.id = pr.user_id
+       WHERE pr.token_hash=$1 AND pr.used=false AND pr.expires_at > now()`,
+      [tokenHash]
+    );
+    if (!r.rows.length) return res.status(400).json({ error: 'Reset link is invalid or expired' });
+    const hash = await bcrypt.hash(String(password), 12);
+    await pool.query('UPDATE users SET password_hash=$2 WHERE id=$1', [r.rows[0].uid, hash]);
+    await pool.query('UPDATE password_resets SET used=true WHERE id=$1', [r.rows[0].id]);
+    res.json({ ok: true });
+  } catch (e) { console.error(e); res.status(500).json({ error: 'Server error' }); }
 });
 
 app.get('/api/auth/me', auth, async (req, res) => {
@@ -255,7 +336,7 @@ app.get('/api/auth/me', auth, async (req, res) => {
 app.post('/api/auth/change-password', auth, async (req, res) => {
   try {
     const { new_password } = req.body;
-    if (!new_password || new_password.length < 6) return res.status(400).json({ error: 'Password must be at least 6 characters' });
+    if (!new_password || new_password.length < 8) return res.status(400).json({ error: 'Password must be at least 8 characters' });
     const hash = await bcrypt.hash(new_password, 10);
     await pool.query('UPDATE users SET password_hash=$2 WHERE id=$1', [req.user.id, hash]);
     res.json({ ok: true });
@@ -284,6 +365,7 @@ app.post('/api/members', auth, adminOnly, async (req, res) => {
   try {
     const { name, email, phone, password, plan_id, trainer_id, expiry_date, photo } = req.body;
     if (!name) return res.status(400).json({ error: 'Name is required' });
+    if (!password || String(password).length < 6) return res.status(400).json({ error: 'A password (6+ characters) is required for the member' });
     if (email) {
       const d = await pool.query('SELECT id FROM users WHERE email=$1', [email.toLowerCase().trim()]);
       if (d.rows.length) return res.status(400).json({ error: 'Email already exists' });
@@ -294,16 +376,16 @@ app.post('/api/members', auth, adminOnly, async (req, res) => {
       expiry = pl.rows[0] ? new Date(Date.now() + pl.rows[0].duration_days * 86400000)
         .toISOString().slice(0, 10) : null;
     }
-    const hash = await bcrypt.hash(password || 'gym123', 10);
+    const hash = await bcrypt.hash(password, 10);
     const r = await pool.query(
       `INSERT INTO users (name, email, phone, password_hash, role, plan_id, trainer_id, join_date, expiry_date, photo)
        VALUES ($1,$2,$3,$4,'member',$5,$6,CURRENT_DATE,$7,$8) RETURNING id`,
       [name.trim(), email ? email.toLowerCase().trim() : null, phone || null, hash,
        plan_id || null, trainer_id || null, expiry, photo || null]
     );
-    // naye member ko welcome + login details ka message bhejo
+    // tell the new member about the account — the password is never included in messages
     const newId = r.rows[0].id;
-    const welcome = `Hi ${name.trim()},\n\nYour account is ready at Jaini Fitness Center!\nWebsite: ${APP_URL}\nLogin email: ${email || '(admin will share)'}\nPassword: ${password || 'gym123'}\n\nSee you at the gym!`;
+    const welcome = `Hi ${name.trim()},\n\nYour account is ready at Jaini Fitness Center!\nWebsite: ${APP_URL}\nLogin email: ${email || '(admin will share)'}\n\nUse "Forgot Password" on the login page to set your password.`;
     notify(newId, { email: email || null, phone: phone || null }, 'Welcome to Jaini Fitness Center', welcome)
       .catch((e) => console.error('notify fail:', e.message));
     res.json({ id: newId });
@@ -360,7 +442,7 @@ app.delete('/api/members/:id', auth, adminOnly, async (req, res) => {
 });
 
 // ---------- membership inquiries (public form on the website) ----------
-app.post('/api/inquiries', async (req, res) => {
+app.post('/api/inquiries', inquiryLimiter, async (req, res) => {
   try {
     const { first_name, last_name, email, phone, pin_code } = req.body;
     if (!first_name || !email || !phone) return res.status(400).json({ error: 'First name, email and phone are required' });
@@ -390,7 +472,7 @@ app.get('/api/inquiries', auth, adminOnly, async (req, res) => {
   res.json(r.rows);
 });
 
-app.put('/api/inquiries/:id', async (req, res) => {
+app.put('/api/inquiries/:id', inquiryLimiter, async (req, res) => {
   // used by the join flow to attach the chosen plan and payment mode
   try {
     const { plan_id, pay_mode } = req.body;
@@ -408,7 +490,7 @@ app.put('/api/inquiries/:id', async (req, res) => {
 const RZP_KEY = process.env.RAZORPAY_KEY_ID || '';
 const RZP_SECRET = process.env.RAZORPAY_KEY_SECRET || '';
 
-app.post('/api/razorpay/order', async (req, res) => {
+app.post('/api/razorpay/order', razorpayLimiter, async (req, res) => {
   try {
     if (!RZP_KEY || !RZP_SECRET) return res.status(400).json({ error: 'Razorpay keys not configured' });
     const p = await pool.query('SELECT * FROM plans WHERE id=$1', [req.body.plan_id]);
@@ -434,7 +516,7 @@ app.post('/api/razorpay/order', async (req, res) => {
   } catch (e) { console.error(e); res.status(500).json({ error: 'Server error' }); }
 });
 
-app.post('/api/razorpay/verify', async (req, res) => {
+app.post('/api/razorpay/verify', razorpayLimiter, async (req, res) => {
   try {
     if (!RZP_KEY || !RZP_SECRET) return res.status(400).json({ error: 'Razorpay keys not configured' });
     const { order_id, payment_id, signature, inquiry_id } = req.body;
@@ -497,6 +579,33 @@ app.post('/api/razorpay/verify', async (req, res) => {
     const owner = process.env.SMTP_FROM || process.env.SMTP_USER;
     sendEmail(owner, subject, body).then(nr => logNotif(null, 'email', owner, subject, body, nr.status, nr.error).catch(() => {}));
     res.json({ ok: true });
+  } catch (e) { console.error(e); res.status(500).json({ error: 'Server error' }); }
+});
+
+// ---------- Razorpay server webhook (server-to-server, survives browser close) ----------
+app.post('/api/webhooks/razorpay', razorpayLimiter, express.json({ limit: '1mb' }), async (req, res) => {
+  try {
+    const WH_SECRET = process.env.RAZORPAY_WEBHOOK_SECRET || '';
+    if (!WH_SECRET) return res.status(503).json({ error: 'Webhook secret not configured' });
+    const sig = req.headers['x-razorpay-signature'] || '';
+    const expected = crypto.createHmac('sha256', WH_SECRET).update(JSON.stringify(req.body)).digest('hex');
+    if (expected !== sig) return res.status(400).json({ error: 'Webhook signature mismatch' });
+    const ev = req.body || {};
+    // payment.captured / payment_link.paid both mean money is in
+    if (ev.event === 'payment.captured' || ev.event === 'payment_link.paid') {
+      const pid = ev.payload && ev.payload.payment && ev.payload.payment.entity && ev.payload.payment.entity.id;
+      if (pid) {
+        // idempotent: if the browser verify flow already recorded this payment, do nothing
+        const dup = await pool.query(`SELECT 1 FROM payments WHERE note LIKE $1 LIMIT 1`, ['%' + String(pid) + '%']);
+        if (!dup.rows.length) {
+          const am = ev.payload.payment.entity.amount || 0;
+          const body = 'Razorpay webhook payment captured.\nPayment ID: ' + pid + '\nAmount: ₹' + (am / 100).toLocaleString('en-IN');
+          const owner = process.env.SMTP_FROM || process.env.SMTP_USER;
+          await logNotif(null, 'email', owner, 'Webhook payment captured — ' + pid, body, 'ready', null);
+        }
+      }
+    }
+    res.json({ ok: true }); // 200 = accepted; Razorpay retries non-200
   } catch (e) { console.error(e); res.status(500).json({ error: 'Server error' }); }
 });
 
@@ -708,6 +817,11 @@ app.get('/api/reports/summary', auth, adminOnly, async (req, res) => {
   res.json(r.rows[0]);
 });
 
-app.listen(PORT, () => console.log('GymFit API chal raha hai port', PORT));
-
-init().catch((e) => { console.error('DB init failed:', e); process.exit(1); });
+// listen only after the schema is ready (avoids the cold-start race)
+init()
+  .then(() => {
+    app.use(notFound);
+    app.use(errorHandler);
+    app.listen(PORT, () => console.log('GymFit API listening on port', PORT));
+  })
+  .catch((e) => { console.error('DB init failed:', e); process.exit(1); });
