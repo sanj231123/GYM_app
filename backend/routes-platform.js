@@ -100,6 +100,7 @@ router.get('/gyms', async (req, res) => {
   try {
     const r = await pool.query(`
       SELECT g.id, g.slug, g.name, g.status, g.trial_ends_at, g.paid_until, g.created_at,
+             g.subscription_id, g.subscription_status,
              (SELECT count(*)::int FROM users u WHERE u.gym_id = g.id AND u.role='member') AS members,
              (SELECT COALESCE(sum(p.amount),0)::float FROM payments p WHERE p.gym_id = g.id) AS revenue
       FROM gyms g ORDER BY g.created_at DESC`);
@@ -140,6 +141,52 @@ router.post('/gyms/:id/mark-paid', async (req, res) => {
     );
     if (!r.rows.length) return res.status(404).json({ error: 'Gym not found' });
     res.json(r.rows[0]);
+  } catch (e) { console.error(e); res.status(500).json({ error: 'Server error' }); }
+});
+
+// ---------- platform fee: automatic collection via a Razorpay subscription ----------
+// One-time setup (Razorpay dashboard, the platform's own Razorpay account):
+//   1. create a recurring "Plan" (e.g. ₹499/month) → copy its id (sub_plan…→ plan_…)
+//   2. set PLATFORM_RZP_PLAN_ID + RAZORPAY_KEY_ID/KEY_SECRET in .env
+// The gym owner then gets a payment link from Razorpay by email / SMS; every
+// successful charge fires the subscription.charged webhook which extends the
+// gym's paid_until by one month automatically.
+router.post('/gyms/:id/subscription', async (req, res) => {
+  try {
+    const key = process.env.RAZORPAY_KEY_ID || '', secret = process.env.RAZORPAY_KEY_SECRET || '';
+    const plan = process.env.PLATFORM_RZP_PLAN_ID || '';
+    if (!key || !secret) return res.status(400).json({ error: 'Platform Razorpay keys are not configured (RAZORPAY_KEY_ID/KEY_SECRET)' });
+    if (!plan) return res.status(400).json({ error: 'No subscription plan set — create a recurring Plan in Razorpay and put its id in PLATFORM_RZP_PLAN_ID' });
+    const g = (await pool.query('SELECT id, slug, name, owner_user_id FROM gyms WHERE id=$1', [req.params.id])).rows[0];
+    if (!g) return res.status(404).json({ error: 'Gym not found' });
+    const owner = (await pool.query('SELECT name, email, phone FROM users WHERE id=$1', [g.owner_user_id])).rows[0]
+      || { name: 'Gym owner', email: '', phone: '' };
+    const cycles = Number((req.body || {}).cycles || 12);
+    const r = await fetch('https://api.razorpay.com/v1/subscriptions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: 'Basic ' + Buffer.from(key + ':' + secret).toString('base64'),
+      },
+      body: JSON.stringify({
+        plan_id: plan,
+        total_count: Math.max(1, Math.min(60, Math.trunc(cycles))),
+        quantity: 1,
+        customer_notify: 1,
+        notify_info: { notify_email: owner.email || undefined, notify_phone: owner.phone || undefined },
+        notes: { gym_slug: g.slug, gym_id: String(g.id) },
+      }),
+    });
+    const data = await r.json();
+    if (!r.ok) {
+      return res.status(502).json({ error: 'Razorpay rejected the subscription: ' + ((data.error && data.error.description) || 'unknown error') });
+    }
+    await pool.query('UPDATE gyms SET subscription_id=$1, subscription_status=$2 WHERE id=$3',
+      [data.id, data.status || 'created', g.id]);
+    res.json({
+      ok: true, subscription_id: data.id, status: data.status,
+      short_url: data.short_url || null, // Razorpay also emails / SMSes this link to the owner
+    });
   } catch (e) { console.error(e); res.status(500).json({ error: 'Server error' }); }
 });
 

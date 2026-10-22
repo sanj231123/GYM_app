@@ -306,6 +306,7 @@ check"** step proves one gym can never read or write another gym's data.
 - **Public site** — hero slider, plans, trainers, blog, membership inquiry form
 - **Multi-tenant SaaS** — per-gym branding, data isolation, trials, platform admin panel (see above)
 - **Custom message templates** — per-gym welcome / payment / inquiry texts with `{{placeholders}}` in Settings
+- **Platform fee automation** — Razorpay subscription per gym; charges extend the paid period automatically
 
 ---
 
@@ -344,11 +345,66 @@ Now every `git push origin main` deploys automatically.
 
 ---
 
-## Deploying to the Cloud (later)
+## Deploying to a VPS (step by step)
 
-No IPs are hard-coded — everything is inside Docker. For Kubernetes / Terraform on
-AWS/Azure: point `frontend/nginx.conf`'s backend upstream at the backend service and set
-the database URL in `.env`.
+Works on a fresh Ubuntu 22.04/24.04 server (1 GB RAM is enough). The installer
+does not need a domain — HTTPS is switched on later, when you have one.
+
+```bash
+# on the VPS (SSH in as root):
+# 1. get the code (token = GitHub → Settings → Developer settings → Personal
+#    access tokens; it needs read access to this repo)
+git clone <this-repo-url> && cd GYM_app
+# 2. run the installer
+GIT_TOKEN=ghp_xxxxx bash deploy/install-vps.sh
+```
+
+(The token is only used once by the installer to clone the private repo —
+revoke it after the install if you don't want it around.)
+
+The script installs Docker, clones the repo into `/opt/gym-app`, generates strong
+secrets (`JWT_SECRET`, `POSTGRES_PASSWORD`, admin accounts) into `.env`, prints
+them once, and starts the platform on `http://<server-ip>`.
+
+**When the domain arrives** (point its `A` record at the VPS IP first):
+edit `/opt/gym-app/.env` — set `PLATFORM_DOMAIN`, `CADDY_EMAIL`,
+`FRONTEND_ORIGINS=https://yourdomain.com,https://*.yourdomain.com`,
+`APP_URL=https://yourdomain.com` — then:
+
+```bash
+cd /opt/gym-app
+docker compose down
+docker compose -f docker-compose.prod.yml up -d --build
+```
+
+That switches to HTTPS (`Caddy` with on-demand TLS, including
+`<slug>.yourdomain.com` for every gym) and turns on the nightly backup service.
+Afterwards install the GitHub self-hosted runner on the VPS (see the CI/CD
+section) so future `git push`es deploy automatically.
+
+For Kubernetes / Terraform on AWS/Azure instead: point `frontend/nginx.conf`'s
+backend upstream at the backend service and set the database URL in `.env`.
+
+---
+
+## Platform fee (auto collection)
+
+One month of platform access per gym can be collected automatically instead of
+the manual **Mark paid** button:
+
+1. In the Razorpay dashboard of the **platform's own account**, create a
+   recurring **Subscription Plan** (e.g. `₹499 / month`) and copy its `plan_…` id.
+2. Put it in `.env` as `PLATFORM_RZP_PLAN_ID=plan_…` (plus the platform's
+   `RAZORPAY_KEY_ID` / `RAZORPAY_KEY_SECRET`) and in the Razorpay dashboard add
+   a webhook (`<your api url>/api/webhooks/razorpay`, event
+   `subscription.charged` + `subscription.cancelled`) with the same secret as
+   `RAZORPAY_WEBHOOK_SECRET`.
+3. In the platform admin panel use **Auto-fee** on a gym — Razorpay emails the
+   gym owner a payment link. Every successful charge extends that gym's
+   `paid_until` by one month automatically (verified webhook flow); a cancelled
+   subscription is recorded next to the gym.
+
+The manual workflows (**Mark paid**, suspend/activate) keep working as before.
 
 ---
 

@@ -130,6 +130,20 @@ export function PlatformPanel({ user }) {
     try { await post('/platform/gyms/' + g.id + '/mark-paid', { months }); load() }
     catch (e) { alert(e.message) } finally { setBusyId(null) }
   }
+  // sends the gym owner a Razorpay subscription link for the platform fee;
+  // every future charge automatically extends the gym's paid period
+  const autoFee = async (g) => {
+    const c = window.prompt('Create a platform-fee subscription (monthly, auto-collected).\nHow many monthly cycles? (e.g. 12)')
+    const cycles = Number(c)
+    if (!cycles || cycles < 1) return
+    setBusyId(g.id)
+    try {
+      const r = await post('/platform/gyms/' + g.id + '/subscription', { cycles })
+      const due = `Subscription ${r.subscription_id} created (${r.status}).\nRazorpay has been asked to email the owner the payment link.`
+      window.alert(r.short_url ? due + '\n\nAlso open: ' + r.short_url : due)
+      load()
+    } catch (e) { alert(e.message) } finally { setBusyId(null) }
+  }
 
   const stateOf = (g) => {
     if (g.status === 'suspended') return ['Suspended', '#d93025']
@@ -166,6 +180,7 @@ export function PlatformPanel({ user }) {
                     <td className="small muted">
                       {g.status === 'trial' ? (g.trial_ends_at ? new Date(g.trial_ends_at).toLocaleDateString('en-IN') : '—')
                         : (g.paid_until ? new Date(g.paid_until).toLocaleDateString('en-IN') : '—')}
+                      {g.subscription_status && <div>fee: {g.subscription_status}</div>}
                     </td>
                     <td>
                       <span className="row" style={{ gap: 6 }}>
@@ -173,6 +188,7 @@ export function PlatformPanel({ user }) {
                           ? <button className="btn ghost sm" disabled={busyId === g.id} onClick={() => setStatus(g, 'suspended')}>Suspend</button>
                           : <button className="btn primary sm" disabled={busyId === g.id} onClick={() => setStatus(g, 'active')}>Activate</button>}
                         <button className="btn primary sm" disabled={busyId === g.id} onClick={() => markPaid(g)}>Mark paid</button>
+                        <button className="btn ghost sm" title="Monthly platform fee via Razorpay" disabled={busyId === g.id} onClick={() => autoFee(g)}>Auto-fee</button>
                       </span>
                     </td>
                   </tr>

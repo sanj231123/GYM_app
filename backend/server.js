@@ -665,6 +665,35 @@ app.post('/api/webhooks/razorpay', razorpayLimiter, express.json({ limit: '1mb' 
         }
       }
     }
+    // platform fee: a gym's subscription was charged → extend this gym by a month
+    if (ev.event === 'subscription.charged') {
+      const sub = ev.payload && ev.payload.subscription && ev.payload.subscription.entity;
+      if (sub && sub.id) {
+        const g = await pool.query('SELECT id, slug FROM gyms WHERE subscription_id=$1', [sub.id]);
+        if (g.rows.length) {
+          await pool.query(
+            `UPDATE gyms SET status='active',
+               paid_until = GREATEST(COALESCE(paid_until, now()), now()) + interval '1 month',
+               subscription_status = 'active'
+             WHERE id=$1`, [g.rows[0].id]);
+          const amt = ev.payload.payment && ev.payload.payment.entity ? ev.payload.payment.entity.amount / 100 : null;
+          const owner = await pool.query(
+            `SELECT email FROM users WHERE id = (SELECT owner_user_id FROM gyms WHERE id=$1)`, [g.rows[0].id]);
+          const body = 'Platform fee received for gym "' + g.rows[0].slug + '".\nSubscription: ' + sub.id
+            + (amt ? '\nAmount: ₹' + Number(amt).toLocaleString('en-IN') : '')
+            + '\nThe gym\'s paid_until was extended by one month automatically.';
+          sendEmail(owner.rows[0] && owner.rows[0].email, 'Platform fee received — ' + g.rows[0].slug, body)
+            .then(nr => logNotif(null, 'email', owner.rows[0] && owner.rows[0].email, 'Platform fee received — ' + g.rows[0].slug, body, nr.status, nr.error).catch(() => {}));
+        }
+      }
+    }
+    // platform fee: a gym's subscription was cancelled → record it (paid_until stays until it lapses)
+    if (ev.event === 'subscription.cancelled') {
+      const sub = ev.payload && ev.payload.subscription && ev.payload.subscription.entity;
+      if (sub && sub.id) {
+        await pool.query(`UPDATE gyms SET subscription_status='cancelled' WHERE subscription_id=$1`, [sub.id]);
+      }
+    }
     res.json({ ok: true }); // 200 = accepted; Razorpay retries non-200
   } catch (e) { console.error(e); res.status(500).json({ error: 'Server error' }); }
 });
