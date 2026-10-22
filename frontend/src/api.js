@@ -1,5 +1,13 @@
 const API = '/api'
 
+// gym (tenant) for path-style URLs like /g/<slug> — sent on every API call
+export const GYM_SLUG = (() => {
+  try {
+    const m = location.pathname.match(/^\/g\/([a-z0-9-]+)/)
+    return m ? m[1] : ''
+  } catch { return '' }
+})()
+
 // Auth lives in an HttpOnly cookie set by the backend (login/register/reset).
 // The browser sends it automatically with every same-origin /api request.
 
@@ -7,7 +15,10 @@ async function req(path, opts = {}) {
   const res = await fetch(API + path, {
     ...opts,
     credentials: 'same-origin',
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      ...(GYM_SLUG ? { 'x-gym-slug': GYM_SLUG } : {}),
+    },
     body: opts.body ? JSON.stringify(opts.body) : undefined,
   })
   const data = await res.json().catch(() => ({}))

@@ -1,0 +1,21 @@
+# Caddy edge — terminates HTTPS for every gym subdomain with on-demand TLS.
+# Each <slug>.PLATFORM_DOMAIN gets a Let's Encrypt certificate automatically the
+# first time a browser hits it (the backend's /api/tenant-check allows only
+# existing gyms). The internal nginx (web) keeps serving the app as before.
+{
+    on_demand_tls {
+        ask http://backend:3000/api/tenant-check
+    }
+    email {$CADDY_EMAIL}
+}
+
+*.{$PLATFORM_DOMAIN} {
+    tls {
+        on_demand
+    }
+    reverse_proxy web:80
+}
+
+{$PLATFORM_DOMAIN} {
+    reverse_proxy web:80
+}

@@ -30,6 +30,10 @@ jobs:
         working-directory: /home/sanjayprajapati/gym-app
         run: docker compose up -d --build
 
+      - name: Multi-tenant isolation check
+        working-directory: /home/sanjayprajapati/gym-app
+        run: docker compose exec -T backend node scripts/tenancy-check.js
+
       - name: Health check
         if: always()
         run: sleep 5; curl -fsS http://localhost:2311/api/health || echo "::warning::Health check failed — check ./logs.sh backend"

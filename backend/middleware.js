@@ -1,6 +1,7 @@
 // shared auth + rate-limit + error middleware
 const jwt = require('jsonwebtoken');
 const rateLimit = require('express-rate-limit');
+const { pool } = require('./db');
 
 const JWT_SECRET = process.env.JWT_SECRET || '';
 const COOKIE_NAME = 'gym_token';
@@ -43,6 +44,45 @@ function clearAuthCookie(res) {
   res.setHeader('Set-Cookie', `${COOKIE_NAME}=; HttpOnly; Path=/; SameSite=Lax; Max-Age=0${secure}`);
 }
 
+// ---------- multi-tenancy ----------
+// Resolves the gym for this request. Priority:
+//   1. x-gym-slug header (set by the SPA on the /g/:slug path fallback)
+//   2. subdomain <slug>.PLATFORM_DOMAIN (or any <slug>.localhost in dev)
+//   3. single-gym fallback — until more gyms exist, the only gym serves
+//      the bare domain too (localhost, jainifitness.test)
+async function resolveTenant(req, res, next) {
+  let slug = (req.get('x-gym-slug') || '').trim().toLowerCase();
+  if (!slug) {
+    const raw = (req.get('host') || '').toLowerCase().split(':')[0];
+    const plat = (process.env.PLATFORM_DOMAIN || '').trim().toLowerCase();
+    if (raw.endsWith('.localhost')) slug = raw.slice(0, -('.localhost'.length));
+    else if (plat && raw !== plat && raw.endsWith('.' + plat)) slug = raw.slice(0, -(plat.length + 1));
+  }
+  try {
+    let gym = null;
+    if (slug) {
+      gym = await pool.query('SELECT * FROM gyms WHERE slug=$1', [slug]);
+      if (!gym.rows.length) return res.status(404).json({ error: 'Gym not found' });
+    } else {
+      const c = await pool.query('SELECT count(*)::int AS c FROM gyms');
+      if (c.rows[0].c === 1) gym = await pool.query('SELECT * FROM gyms LIMIT 1');
+    }
+    if (gym && gym.rows[0]) {
+      req.gym = gym.rows[0];
+      if (req.gym.status === 'suspended') return res.status(403).json({ error: 'This gym is currently suspended' });
+    }
+    next();
+  } catch (e) { next(e); }
+}
+
+// after auth: a signed-in account may only act inside its own gym
+function checkTenantAuth(req, res, next) {
+  if (req.gym && req.user && req.user.gym_id && req.user.gym_id !== req.gym.id) {
+    return res.status(403).json({ error: 'Account does not belong to this gym' });
+  }
+  next();
+}
+
 // ---------- rate-limit tiers ----------
 const limiter = ({ windowMs, max, skip }) =>
   rateLimit({ windowMs, max, standardHeaders: true, legacyHeaders: false, skip });
@@ -65,6 +105,7 @@ function errorHandler(err, req, res, next) {
 
 module.exports = {
   auth, adminOnly, setAuthCookie, clearAuthCookie,
+  resolveTenant, checkTenantAuth,
   globalLimiter, authLimiter, inquiryLimiter, razorpayLimiter,
   notFound, errorHandler, COOKIE_NAME,
 };

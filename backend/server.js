@@ -8,8 +8,11 @@ const bcrypt = require('bcryptjs');
 const nodemailer = require('nodemailer');
 const crypto = require('crypto');
 const { pool } = require('./db');
+const { migrate } = require('./migrate');
+const { seedFirstTenant } = require('./seed');
 const {
   auth, adminOnly, setAuthCookie, clearAuthCookie,
+  resolveTenant, checkTenantAuth,
   globalLimiter, authLimiter, inquiryLimiter, razorpayLimiter,
   notFound, errorHandler,
 } = require('./middleware');
@@ -42,6 +45,7 @@ app.use(helmet({ contentSecurityPolicy: false })); // CSP relaxed: inline styles
 app.use(morgan(':date[iso] :method :url :status :response-time ms'));
 app.use(globalLimiter);
 app.use(express.json({ limit: '3mb' }));
+app.use('/api', resolveTenant); // every /api request carries its gym (tenant) context
 
 // ---------- helpers ----------
 const publicUser = (u) => ({
@@ -67,11 +71,11 @@ if (process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS) {
 const WA_TOKEN = process.env.WHATSAPP_TOKEN || '';
 const WA_PHONE_ID = process.env.WHATSAPP_PHONE_ID || '';
 
-async function logNotif(userId, channel, dest, subject, body, status, error) {
+async function logNotif(userId, channel, dest, subject, body, status, error, gymId) {
   await pool.query(
-    `INSERT INTO notifications (user_id, channel, dest, subject, body, status, error)
-     VALUES ($1,$2,$3,$4,$5,$6,$7)`,
-    [userId || null, channel, dest || null, subject, body, status, error || null]
+    `INSERT INTO notifications (user_id, channel, dest, subject, body, status, error, gym_id)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+    [userId || null, channel, dest || null, subject, body, status, error || null, gymId || null]
   );
 }
 
@@ -97,110 +101,25 @@ async function sendEmail(to, subject, body) {
 }
 
 // send a message to a member on every available channel (email / WhatsApp)
-async function notify(userId, { email, phone }, subject, body) {
-  if (email) {
-    const r = await sendEmail(email, subject, body);
-    await logNotif(userId, 'email', email, subject, body, r.status, r.error);
+async function notify(userId, contact, subject, body, gymId) {
+  if (contact.email) {
+    const r = await sendEmail(contact.email, subject, body);
+    await logNotif(userId, 'email', contact.email, subject, body, r.status, r.error, gymId);
   } else {
-    await logNotif(userId, 'email', null, subject, body, 'skipped', 'No email saved');
+    await logNotif(userId, 'email', null, subject, body, 'skipped', 'No email saved', gymId);
   }
-  if (phone) {
-    const r = await sendWhatsApp(phone, subject + '\n' + body);
-    await logNotif(userId, 'whatsapp', phone, subject, body, r.status, r.error);
+  if (contact.phone) {
+    const r = await sendWhatsApp(contact.phone, subject + '\n' + body);
+    await logNotif(userId, 'whatsapp', contact.phone, subject, body, r.status, r.error, gymId);
   } else {
-    await logNotif(userId, 'whatsapp', null, subject, body, 'skipped', 'No phone saved');
+    await logNotif(userId, 'whatsapp', null, subject, body, 'skipped', 'No phone saved', gymId);
   }
 }
 
-// ---------- DB init (tables + seed) ----------
+// ---------- DB init (migrations + gym seed + bootstrap admin) ----------
 async function init() {
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS plans (
-      id SERIAL PRIMARY KEY,
-      name TEXT NOT NULL,
-      duration_days INT NOT NULL,
-      price NUMERIC(10,2) NOT NULL,
-      created_at TIMESTAMPTZ DEFAULT now()
-    )`);
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS trainers (
-      id SERIAL PRIMARY KEY,
-      name TEXT NOT NULL,
-      phone TEXT,
-      specialty TEXT,
-      created_at TIMESTAMPTZ DEFAULT now()
-    )`);
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS users (
-      id SERIAL PRIMARY KEY,
-      name TEXT NOT NULL,
-      email TEXT UNIQUE,
-      phone TEXT,
-      password_hash TEXT NOT NULL,
-      role TEXT NOT NULL DEFAULT 'member',
-      plan_id INT REFERENCES plans(id) ON DELETE SET NULL,
-      trainer_id INT REFERENCES trainers(id) ON DELETE SET NULL,
-      join_date DATE,
-      expiry_date DATE,
-      created_at TIMESTAMPTZ DEFAULT now()
-    )`);
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS payments (
-      id SERIAL PRIMARY KEY,
-      user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-      amount NUMERIC(10,2) NOT NULL,
-      method TEXT,
-      note TEXT,
-      paid_on DATE NOT NULL DEFAULT CURRENT_DATE,
-      created_at TIMESTAMPTZ DEFAULT now()
-    )`);
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS attendance (
-      id SERIAL PRIMARY KEY,
-      user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-      checkin_at TIMESTAMPTZ NOT NULL DEFAULT now()
-    )`);
-
-  // member photo (dataURL text)
-  await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS photo TEXT`);
-
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS notifications (
-      id SERIAL PRIMARY KEY,
-      user_id INT REFERENCES users(id) ON DELETE CASCADE,
-      channel TEXT,
-      dest TEXT,
-      subject TEXT,
-      body TEXT,
-      status TEXT,
-      error TEXT,
-      created_at TIMESTAMPTZ DEFAULT now()
-    )`);
-
-  // membership inquiries from the website contact form
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS inquiries (
-      id SERIAL PRIMARY KEY,
-      first_name TEXT,
-      last_name TEXT,
-      email TEXT,
-      phone TEXT,
-      pin_code TEXT,
-      created_at TIMESTAMPTZ DEFAULT now()
-    )`);
-  await pool.query(`ALTER TABLE inquiries ADD COLUMN IF NOT EXISTS plan_id INT`);
-  await pool.query(`ALTER TABLE inquiries ADD COLUMN IF NOT EXISTS pay_mode TEXT`);
-
-  // one-time-use password reset tokens
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS password_resets (
-      id SERIAL PRIMARY KEY,
-      user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-      token_hash TEXT NOT NULL,
-      expires_at TIMESTAMPTZ NOT NULL,
-      used BOOLEAN NOT NULL DEFAULT false,
-      created_at TIMESTAMPTZ DEFAULT now()
-    )`);
+  await migrate();         // applies backend/migrations/*.sql in order (idempotent)
+  await seedFirstTenant(); // gym #1 + backfills every pre-tenancy row (idempotent)
 
   // bootstrap admin (no hardcoded credentials) — created once from env on first run
   const anyAdmin = await pool.query(`SELECT id FROM users WHERE role='admin' LIMIT 1`);
@@ -218,15 +137,19 @@ async function init() {
     );
     console.log('Bootstrap admin created:', BOOT_EMAIL, '— change this password after first login');
   }
-  // default plans
-  const plans = await pool.query('SELECT count(*)::int AS c FROM plans');
-  if (!plans.rows[0].c) {
-    await pool.query(
-      `INSERT INTO plans (name, duration_days, price) VALUES
-       ('Monthly Plan', 30, 1500),
-       ('Quarterly Plan', 90, 4000),
-       ('Yearly Plan', 365, 12000)`
-    );
+  // default plans for gym #1 (idempotent)
+  const gid = await pool.query(`SELECT id FROM gyms ORDER BY id LIMIT 1`);
+  if (gid.rows.length) {
+    const plans = await pool.query('SELECT count(*)::int AS c FROM plans WHERE gym_id=$1', [gid.rows[0].id]);
+    if (!plans.rows[0].c) {
+      await pool.query(
+        `INSERT INTO plans (name, duration_days, price, gym_id) VALUES
+         ('Monthly Plan', 30, 1500, $1),
+         ('Quarterly Plan', 90, 4000, $1),
+         ('Yearly Plan', 365, 12000, $1)`,
+        [gid.rows[0].id]
+      );
+    }
   }
 }
 
@@ -240,12 +163,13 @@ app.get('/api/health', async (req, res) => {
 app.post('/api/auth/login', authLimiter, async (req, res) => {
   try {
     const { email, password } = req.body;
-    const r = await pool.query('SELECT * FROM users WHERE email=$1', [(email || '').toLowerCase().trim()]);
+    if (!req.gym) return res.status(404).json({ error: 'Gym not found for this address' });
+    const r = await pool.query('SELECT * FROM users WHERE email=$1 AND gym_id=$2', [(email || '').toLowerCase().trim(), req.gym.id]);
     const u = r.rows[0];
     if (!u || !(await bcrypt.compare(password || '', u.password_hash))) {
       return res.status(401).json({ error: 'Wrong email or password' });
     }
-    const token = jwt.sign({ id: u.id, role: u.role }, JWT_SECRET, { expiresIn: '7d' });
+    const token = jwt.sign({ id: u.id, role: u.role, gym_id: u.gym_id }, JWT_SECRET, { expiresIn: '7d' });
     setAuthCookie(res, token); // HttpOnly cookie is the primary storage from now on
     res.json({ token, user: publicUser(u) });
   } catch (e) {
@@ -255,18 +179,19 @@ app.post('/api/auth/login', authLimiter, async (req, res) => {
 
 app.post('/api/auth/register', authLimiter, async (req, res) => {
   try {
+    if (!req.gym) return res.status(404).json({ error: 'Gym not found for this address' });
     const { name, email, phone, password } = req.body;
     if (!name || !email || !password) return res.status(400).json({ error: 'Name, email and password are required' });
     if (String(password).length < 8) return res.status(400).json({ error: 'Password must be at least 8 characters' });
-    const d = await pool.query('SELECT id FROM users WHERE email=$1', [email.toLowerCase().trim()]);
+    const d = await pool.query('SELECT id FROM users WHERE email=$1 AND gym_id=$2', [email.toLowerCase().trim(), req.gym.id]);
     if (d.rows.length) return res.status(400).json({ error: 'This email already exists, please login' });
     const hash = await bcrypt.hash(password, 10);
     const r = await pool.query(
-      `INSERT INTO users (name, email, phone, password_hash, role, join_date)
-       VALUES ($1,$2,$3,$4,'member',CURRENT_DATE) RETURNING *`,
-      [name.trim(), email.toLowerCase().trim(), phone || null, hash]
+      `INSERT INTO users (name, email, phone, password_hash, role, gym_id, join_date)
+       VALUES ($1,$2,$3,$4,'member',$5,CURRENT_DATE) RETURNING *`,
+      [name.trim(), email.toLowerCase().trim(), phone || null, hash, req.gym.id]
     );
-    const token = jwt.sign({ id: r.rows[0].id, role: r.rows[0].role }, JWT_SECRET, { expiresIn: '7d' });
+    const token = jwt.sign({ id: r.rows[0].id, role: r.rows[0].role, gym_id: r.rows[0].gym_id }, JWT_SECRET, { expiresIn: '7d' });
     setAuthCookie(res, token);
     res.json({ token, user: publicUser(r.rows[0]) });
   } catch (e) {
@@ -338,15 +263,40 @@ app.post('/api/auth/change-password', auth, async (req, res) => {
     const { new_password } = req.body;
     if (!new_password || new_password.length < 8) return res.status(400).json({ error: 'Password must be at least 8 characters' });
     const hash = await bcrypt.hash(new_password, 10);
-    await pool.query('UPDATE users SET password_hash=$2 WHERE id=$1', [req.user.id, hash]);
+    await pool.query('UPDATE users SET password_hash=$2 WHERE id=$1 AND gym_id=$3', [req.user.id, hash, req.gym.id]);
     res.json({ ok: true });
   } catch (e) {
     console.error(e); res.status(500).json({ error: 'Server error' });
   }
 });
 
+// ---------- public gym branding (for the website header etc.) ----------
+app.get('/api/tenant/:slug', async (req, res) => {
+  try {
+    const g = await pool.query(
+      `SELECT slug, name, logo, primary_color, address, phone, hours, map_url
+       FROM gyms WHERE slug=$1`, [req.params.slug]);
+    if (!g.rows.length) return res.status(404).json({ error: 'Gym not found' });
+    res.json(g.rows[0]);
+  } catch (e) { console.error(e); res.status(500).json({ error: 'Server error' }); }
+});
+
+// Caddy on-demand TLS "ask" endpoint: 200 only for subdomains of an existing gym.
+// Caddy calls GET /api/tenant-check?domain=<host>; any non-200 refuses the cert.
+app.get('/api/tenant-check', async (req, res) => {
+  try {
+    const host = String(req.query.domain || '').toLowerCase().split(':')[0];
+    const plat = (process.env.PLATFORM_DOMAIN || '').trim().toLowerCase();
+    if (!host || !plat || !host.endsWith('.' + plat)) return res.status(403).end();
+    const slug = host.slice(0, -(plat.length + 1));
+    if (!slug) return res.status(403).end();
+    const c = await pool.query('SELECT 1 FROM gyms WHERE slug=$1', [slug]);
+    res.status(c.rows.length ? 200 : 403).end();
+  } catch { res.status(403).end(); }
+});
+
 // ---------- members (admin) ----------
-app.get('/api/members', auth, adminOnly, async (req, res) => {
+app.get('/api/members', auth, checkTenantAuth, adminOnly, async (req, res) => {
   const like = `%${(req.query.search || '').trim()}%`;
   const r = await pool.query(
     `SELECT u.id, u.name, u.email, u.phone, u.join_date, u.expiry_date, u.photo,
@@ -354,39 +304,40 @@ app.get('/api/members', auth, adminOnly, async (req, res) => {
      FROM users u
      LEFT JOIN plans p ON p.id = u.plan_id
      LEFT JOIN trainers t ON t.id = u.trainer_id
-     WHERE u.role = 'member' AND (u.name ILIKE $1 OR u.phone ILIKE $1 OR u.email ILIKE $1)
+     WHERE u.role = 'member' AND u.gym_id = $2 AND (u.name ILIKE $1 OR u.phone ILIKE $1 OR u.email ILIKE $1)
      ORDER BY u.created_at DESC`,
-    [like]
+    [like, req.gym.id]
   );
   res.json(r.rows);
 });
 
-app.post('/api/members', auth, adminOnly, async (req, res) => {
+app.post('/api/members', auth, checkTenantAuth, adminOnly, async (req, res) => {
   try {
+    if (!req.gym) return res.status(404).json({ error: 'Gym not found' });
     const { name, email, phone, password, plan_id, trainer_id, expiry_date, photo } = req.body;
     if (!name) return res.status(400).json({ error: 'Name is required' });
     if (!password || String(password).length < 6) return res.status(400).json({ error: 'A password (6+ characters) is required for the member' });
     if (email) {
-      const d = await pool.query('SELECT id FROM users WHERE email=$1', [email.toLowerCase().trim()]);
+      const d = await pool.query('SELECT id FROM users WHERE email=$1 AND gym_id=$2', [email.toLowerCase().trim(), req.gym.id]);
       if (d.rows.length) return res.status(400).json({ error: 'Email already exists' });
     }
     let expiry = expiry_date || null;
     if (!expiry && plan_id) {
-      const pl = await pool.query('SELECT duration_days FROM plans WHERE id=$1', [plan_id]);
+      const pl = await pool.query('SELECT duration_days FROM plans WHERE id=$1 AND gym_id=$2', [plan_id, req.gym.id]);
       expiry = pl.rows[0] ? new Date(Date.now() + pl.rows[0].duration_days * 86400000)
         .toISOString().slice(0, 10) : null;
     }
     const hash = await bcrypt.hash(password, 10);
     const r = await pool.query(
-      `INSERT INTO users (name, email, phone, password_hash, role, plan_id, trainer_id, join_date, expiry_date, photo)
-       VALUES ($1,$2,$3,$4,'member',$5,$6,CURRENT_DATE,$7,$8) RETURNING id`,
-      [name.trim(), email ? email.toLowerCase().trim() : null, phone || null, hash,
+      `INSERT INTO users (name, email, phone, password_hash, role, gym_id, plan_id, trainer_id, join_date, expiry_date, photo)
+       VALUES ($1,$2,$3,$4,'member',$5,$6,$7,CURRENT_DATE,$8,$9) RETURNING id`,
+      [name.trim(), email ? email.toLowerCase().trim() : null, phone || null, hash, req.gym.id,
        plan_id || null, trainer_id || null, expiry, photo || null]
     );
     // tell the new member about the account — the password is never included in messages
     const newId = r.rows[0].id;
-    const welcome = `Hi ${name.trim()},\n\nYour account is ready at Jaini Fitness Center!\nWebsite: ${APP_URL}\nLogin email: ${email || '(admin will share)'}\n\nUse "Forgot Password" on the login page to set your password.`;
-    notify(newId, { email: email || null, phone: phone || null }, 'Welcome to Jaini Fitness Center', welcome)
+    const welcome = `Hi ${name.trim()},\n\nYour account is ready at ${req.gym.name}!\nWebsite: ${APP_URL}\nLogin email: ${email || '(admin will share)'}\n\nUse "Forgot Password" on the login page to set your password.`;
+    notify(newId, { email: email || null, phone: phone || null }, 'Welcome to ' + req.gym.name, welcome, req.gym.id)
       .catch((e) => console.error('notify fail:', e.message));
     res.json({ id: newId });
   } catch (e) {
@@ -394,16 +345,16 @@ app.post('/api/members', auth, adminOnly, async (req, res) => {
   }
 });
 
-app.put('/api/members/:id', auth, adminOnly, async (req, res) => {
+app.put('/api/members/:id', auth, checkTenantAuth, adminOnly, async (req, res) => {
   try {
     const { name, email, phone, plan_id, trainer_id, expiry_date, join_date, photo } = req.body;
-    const cur = (await pool.query(`SELECT * FROM users WHERE id=$1 AND role='member'`, [req.params.id])).rows[0];
+    const cur = (await pool.query(`SELECT * FROM users WHERE id=$1 AND role='member' AND gym_id=$2`, [req.params.id, req.gym.id])).rows[0];
     if (!cur) return res.status(404).json({ error: 'Member not found' });
     await pool.query(
       `UPDATE users SET
          name = $2, email = $3, phone = $4, plan_id = $5,
          trainer_id = $6, expiry_date = $7, join_date = $8, photo = $9
-       WHERE id=$1 AND role='member'`,
+       WHERE id=$1 AND role='member' AND gym_id=$10`,
       [req.params.id,
        name !== undefined && name !== '' ? name : cur.name,
        email === undefined ? cur.email : (email || null),
@@ -412,7 +363,8 @@ app.put('/api/members/:id', auth, adminOnly, async (req, res) => {
        trainer_id === undefined ? cur.trainer_id : (trainer_id || null),
        expiry_date === undefined ? cur.expiry_date : (expiry_date || null),
        join_date === undefined ? cur.join_date : (join_date || null),
-       photo === undefined ? cur.photo : (photo || null)]
+       photo === undefined ? cur.photo : (photo || null),
+       req.gym.id]
     );
     res.json({ ok: true });
   } catch (e) {
@@ -420,21 +372,21 @@ app.put('/api/members/:id', auth, adminOnly, async (req, res) => {
   }
 });
 
-app.put('/api/members/:id/password', auth, adminOnly, async (req, res) => {
+app.put('/api/members/:id/password', auth, checkTenantAuth, adminOnly, async (req, res) => {
   try {
     const { password } = req.body;
     if (!password) return res.status(400).json({ error: 'Password required' });
     const hash = await bcrypt.hash(password, 10);
-    await pool.query(`UPDATE users SET password_hash=$2 WHERE id=$1 AND role='member'`, [req.params.id, hash]);
+    await pool.query(`UPDATE users SET password_hash=$2 WHERE id=$1 AND role='member' AND gym_id=$3`, [req.params.id, hash, req.gym.id]);
     res.json({ ok: true });
   } catch (e) {
     console.error(e); res.status(500).json({ error: 'Server error' });
   }
 });
 
-app.delete('/api/members/:id', auth, adminOnly, async (req, res) => {
+app.delete('/api/members/:id', auth, checkTenantAuth, adminOnly, async (req, res) => {
   try {
-    await pool.query(`DELETE FROM users WHERE id=$1 AND role='member'`, [req.params.id]);
+    await pool.query(`DELETE FROM users WHERE id=$1 AND role='member' AND gym_id=$2`, [req.params.id, req.gym.id]);
     res.json({ ok: true });
   } catch (e) {
     console.error(e); res.status(500).json({ error: 'Server error' });
@@ -444,11 +396,12 @@ app.delete('/api/members/:id', auth, adminOnly, async (req, res) => {
 // ---------- membership inquiries (public form on the website) ----------
 app.post('/api/inquiries', inquiryLimiter, async (req, res) => {
   try {
+    if (!req.gym) return res.status(404).json({ error: 'Gym not found for this address' });
     const { first_name, last_name, email, phone, pin_code } = req.body;
     if (!first_name || !email || !phone) return res.status(400).json({ error: 'First name, email and phone are required' });
     const r = await pool.query(
-      `INSERT INTO inquiries (first_name, last_name, email, phone, pin_code) VALUES ($1,$2,$3,$4,$5) RETURNING id`,
-      [first_name, last_name || '', email, phone, pin_code || '']
+      `INSERT INTO inquiries (first_name, last_name, email, phone, pin_code, gym_id) VALUES ($1,$2,$3,$4,$5,$6) RETURNING id`,
+      [first_name, last_name || '', email, phone, pin_code || '', req.gym.id]
     );
     // email the gym owner about the new lead
     const subject = 'New membership inquiry — ' + first_name + ' ' + (last_name || '');
@@ -460,74 +413,81 @@ app.post('/api/inquiries', inquiryLimiter, async (req, res) => {
       'Phone: ' + phone,
       'PIN code: ' + (pin_code || '—'),
     ].join('\n');
-    const owner = process.env.SMTP_FROM || process.env.SMTP_USER;
+    const owner = req.gym.email || process.env.SMTP_FROM || process.env.SMTP_USER;
     const nr = await sendEmail(owner, subject, body);
-    await logNotif(null, 'email', owner, subject, body, nr.status, nr.error);
+    await logNotif(null, 'email', owner, subject, body, nr.status, nr.error, req.gym.id);
     res.json({ ok: true, id: r.rows[0].id });
   } catch (e) { console.error(e); res.status(500).json({ error: 'Server error' }); }
 });
 
-app.get('/api/inquiries', auth, adminOnly, async (req, res) => {
-  const r = await pool.query('SELECT * FROM inquiries ORDER BY created_at DESC LIMIT 200');
+app.get('/api/inquiries', auth, checkTenantAuth, adminOnly, async (req, res) => {
+  const r = await pool.query('SELECT * FROM inquiries WHERE gym_id=$1 ORDER BY created_at DESC LIMIT 200', [req.gym.id]);
   res.json(r.rows);
 });
 
 app.put('/api/inquiries/:id', inquiryLimiter, async (req, res) => {
   // used by the join flow to attach the chosen plan and payment mode
   try {
+    if (!req.gym) return res.status(404).json({ error: 'Gym not found for this address' });
     const { plan_id, pay_mode } = req.body;
     if (!plan_id || !pay_mode) return res.status(400).json({ error: 'Plan and payment mode are required' });
     const r = await pool.query(
-      'UPDATE inquiries SET plan_id=$1, pay_mode=$2 WHERE id=$3 RETURNING *',
-      [plan_id, pay_mode, req.params.id]
+      'UPDATE inquiries SET plan_id=$1, pay_mode=$2 WHERE id=$3 AND gym_id=$4 RETURNING *',
+      [plan_id, pay_mode, req.params.id, req.gym.id]
     );
     if (!r.rows.length) return res.status(404).json({ error: 'Inquiry not found' });
     res.json(r.rows[0]);
   } catch (e) { console.error(e); res.status(500).json({ error: 'Server error' }); }
 });
 
-// ---------- Razorpay (online payments, test keys) ----------
-const RZP_KEY = process.env.RAZORPAY_KEY_ID || '';
-const RZP_SECRET = process.env.RAZORPAY_KEY_SECRET || '';
+// ---------- Razorpay (online payments) — per-tenant keys first, env as fallback ----------
+const gymRzpKeys = (req) => ({
+  key: (req.gym && req.gym.razorpay_key_id) || process.env.RAZORPAY_KEY_ID || '',
+  secret: (req.gym && req.gym.razorpay_key_secret) || process.env.RAZORPAY_KEY_SECRET || '',
+});
 
 app.post('/api/razorpay/order', razorpayLimiter, async (req, res) => {
   try {
-    if (!RZP_KEY || !RZP_SECRET) return res.status(400).json({ error: 'Razorpay keys not configured' });
-    const p = await pool.query('SELECT * FROM plans WHERE id=$1', [req.body.plan_id]);
+    if (!req.gym) return res.status(404).json({ error: 'Gym not found for this address' });
+    const { key, secret } = gymRzpKeys(req);
+    if (!key || !secret) return res.status(400).json({ error: 'Razorpay keys not configured' });
+    const p = await pool.query('SELECT * FROM plans WHERE id=$1 AND gym_id=$2', [req.body.plan_id, req.gym.id]);
     if (!p.rows.length) return res.status(404).json({ error: 'Plan not found' });
     const plan = p.rows[0];
     const amount = Math.round(Number(plan.price) * 100); // paise
     const r = await fetch('https://api.razorpay.com/v1/orders', {
       method: 'POST',
       headers: {
-        Authorization: 'Basic ' + Buffer.from(RZP_KEY + ':' + RZP_SECRET).toString('base64'),
+        Authorization: 'Basic ' + Buffer.from(key + ':' + secret).toString('base64'),
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
         amount,
         currency: 'INR',
-        receipt: 'jfc-' + (req.body.inquiry_id || 0) + '-' + Date.now(),
-        notes: { plan: plan.name },
+        receipt: 'g' + req.gym.id + '-' + (req.body.inquiry_id || 0) + '-' + Date.now(),
+        notes: { plan: plan.name, gym: req.gym.slug },
       }),
     });
     if (!r.ok) return res.status(502).json({ error: 'Razorpay order failed' });
     const o = await r.json();
-    res.json({ order_id: o.id, amount: o.amount, key_id: RZP_KEY, plan });
+    res.json({ order_id: o.id, amount: o.amount, key_id: key, plan });
   } catch (e) { console.error(e); res.status(500).json({ error: 'Server error' }); }
 });
 
 app.post('/api/razorpay/verify', razorpayLimiter, async (req, res) => {
   try {
-    if (!RZP_KEY || !RZP_SECRET) return res.status(400).json({ error: 'Razorpay keys not configured' });
+    if (!req.gym) return res.status(404).json({ error: 'Gym not found for this address' });
+    const { key, secret } = gymRzpKeys(req);
+    if (!key || !secret) return res.status(400).json({ error: 'Razorpay keys not configured' });
     const { order_id, payment_id, signature, inquiry_id } = req.body;
     if (!order_id || !payment_id || !signature) return res.status(400).json({ error: 'Missing payment details' });
-    const expected = crypto.createHmac('sha256', RZP_SECRET).update(order_id + '|' + payment_id).digest('hex');
+    const expected = crypto.createHmac('sha256', secret).update(order_id + '|' + payment_id).digest('hex');
     if (expected !== signature) return res.status(400).json({ error: 'Payment signature mismatch' });
     if (inquiry_id) {
       const inqR = await pool.query(
         `SELECT i.*, pl.name AS plan_name, pl.price AS plan_price, pl.duration_days
-         FROM inquiries i LEFT JOIN plans pl ON pl.id = i.plan_id WHERE i.id=$1`,
-        [inquiry_id]
+         FROM inquiries i LEFT JOIN plans pl ON pl.id = i.plan_id WHERE i.id=$1 AND i.gym_id=$2`,
+        [inquiry_id, req.gym.id]
       );
       const inq = inqR.rows[0];
       if (inq) {
@@ -535,13 +495,13 @@ app.post('/api/razorpay/verify', razorpayLimiter, async (req, res) => {
 
         // link to an existing member account when the email matches, so the
         // payment shows up in that member's portal and reports
-        const mr = await pool.query(`SELECT id FROM users WHERE email=$1 AND role='member'`, [inq.email]);
+        const mr = await pool.query(`SELECT id FROM users WHERE email=$1 AND role='member' AND gym_id=$2`, [inq.email, req.gym.id]);
         if (mr.rows.length) {
-          const dup = await pool.query(`SELECT 1 FROM payments WHERE note LIKE $1 LIMIT 1`, ['%' + String(payment_id) + '%']);
+          const dup = await pool.query(`SELECT 1 FROM payments WHERE gym_id=$1 AND note LIKE $2 LIMIT 1`, [req.gym.id, '%' + String(payment_id) + '%']);
           if (!dup.rows.length) {
             await pool.query(
-              `INSERT INTO payments (user_id, amount, method, note) VALUES ($1,$2,'upi',$3)`,
-              [mr.rows[0].id, Number(inq.plan_price || 0), 'Razorpay online payment — ' + payment_id]
+              `INSERT INTO payments (user_id, amount, method, note, gym_id) VALUES ($1,$2,'upi',$3,$4)`,
+              [mr.rows[0].id, Number(inq.plan_price || 0), 'Razorpay online payment — ' + payment_id, req.gym.id]
             );
             // extend the membership expiry by the plan duration (same renew rule as admin payments)
             if (inq.duration_days) {
@@ -557,18 +517,18 @@ app.post('/api/razorpay/verify', razorpayLimiter, async (req, res) => {
           'Hi ' + (inq.first_name || '') + ' ' + (inq.last_name || '') + ',',
           '',
           'Payment received — ₹' + Number(inq.plan_price || 0).toLocaleString('en-IN') + ' (' + (inq.plan_name || 'Membership') + ')',
-          'Welcome to Jaini Fitness Center!',
+          'Welcome to ' + req.gym.name + '!',
           '',
           'Website: ' + APP_URL,
           'See you at the gym 💪',
         ].join('\n');
         if (inq.email) {
-          const r1 = await sendEmail(inq.email, 'Payment confirmation — Jaini Fitness Center', confirmMsg);
-          await logNotif(null, 'email', inq.email, 'Payment confirmation', confirmMsg, r1.status, r1.error);
+          const r1 = await sendEmail(inq.email, 'Payment confirmation — ' + req.gym.name, confirmMsg);
+          await logNotif(null, 'email', inq.email, 'Payment confirmation', confirmMsg, r1.status, r1.error, req.gym.id);
         }
         if (inq.phone) {
-          const r2 = await sendWhatsApp(inq.phone, 'Jaini Fitness Center\n\n' + confirmMsg);
-          await logNotif(null, 'whatsapp', inq.phone, 'Payment confirmation', confirmMsg, r2.status, r2.error);
+          const r2 = await sendWhatsApp(inq.phone, req.gym.name + '\n\n' + confirmMsg);
+          await logNotif(null, 'whatsapp', inq.phone, 'Payment confirmation', confirmMsg, r2.status, r2.error, req.gym.id);
         }
       }
     }
@@ -577,7 +537,7 @@ app.post('/api/razorpay/verify', razorpayLimiter, async (req, res) => {
     const subject = 'Online payment received — ' + payment_id;
     const body = 'Razorpay payment successful.\nOrder: ' + order_id + '\nPayment ID: ' + payment_id;
     const owner = process.env.SMTP_FROM || process.env.SMTP_USER;
-    sendEmail(owner, subject, body).then(nr => logNotif(null, 'email', owner, subject, body, nr.status, nr.error).catch(() => {}));
+    sendEmail(owner, subject, body).then(nr => logNotif(null, 'email', owner, subject, body, nr.status, nr.error, req.gym.id).catch(() => {}));
     res.json({ ok: true });
   } catch (e) { console.error(e); res.status(500).json({ error: 'Server error' }); }
 });
@@ -611,71 +571,77 @@ app.post('/api/webhooks/razorpay', razorpayLimiter, express.json({ limit: '1mb' 
 
 // ---------- plans ----------
 app.get('/api/plans', async (req, res) => {  // public: shown on the member website
-  const r = await pool.query('SELECT * FROM plans ORDER BY duration_days');
+  if (!req.gym) return res.json([]);
+  const r = await pool.query('SELECT * FROM plans WHERE gym_id=$1 ORDER BY duration_days', [req.gym.id]);
   res.json(r.rows);
 });
 
-app.post('/api/plans', auth, adminOnly, async (req, res) => {
+app.post('/api/plans', auth, checkTenantAuth, adminOnly, async (req, res) => {
   try {
     const { name, duration_days, price } = req.body;
     if (!name || !duration_days || !price) return res.status(400).json({ error: 'Name, days and price are required' });
     const r = await pool.query(
-      `INSERT INTO plans (name, duration_days, price) VALUES ($1,$2,$3) RETURNING *`,
-      [name, duration_days, price]
+      `INSERT INTO plans (name, duration_days, price, gym_id) VALUES ($1,$2,$3,$4) RETURNING *`,
+      [name, duration_days, price, req.gym.id]
     );
     res.json(r.rows[0]);
   } catch (e) { console.error(e); res.status(500).json({ error: 'Server error' }); }
 });
 
-app.delete('/api/plans/:id', auth, adminOnly, async (req, res) => {
+app.delete('/api/plans/:id', auth, checkTenantAuth, adminOnly, async (req, res) => {
   try {
-    await pool.query('DELETE FROM plans WHERE id=$1', [req.params.id]);
+    await pool.query('DELETE FROM plans WHERE id=$1 AND gym_id=$2', [req.params.id, req.gym.id]);
     res.json({ ok: true });
   } catch (e) { console.error(e); res.status(500).json({ error: 'Server error' }); }
 });
 
 // ---------- trainers ----------
 app.get('/api/trainers', async (req, res) => {  // public: shown on the member website
-  const r = await pool.query('SELECT * FROM trainers ORDER BY name');
+  if (!req.gym) return res.json([]);
+  const r = await pool.query('SELECT * FROM trainers WHERE gym_id=$1 ORDER BY name', [req.gym.id]);
   res.json(r.rows);
 });
 
-app.post('/api/trainers', auth, adminOnly, async (req, res) => {
+app.post('/api/trainers', auth, checkTenantAuth, adminOnly, async (req, res) => {
   try {
     const { name, phone, specialty } = req.body;
     if (!name) return res.status(400).json({ error: 'Name is required' });
     const r = await pool.query(
-      `INSERT INTO trainers (name, phone, specialty) VALUES ($1,$2,$3) RETURNING *`,
-      [name, phone || null, specialty || null]
+      `INSERT INTO trainers (name, phone, specialty, gym_id) VALUES ($1,$2,$3,$4) RETURNING *`,
+      [name, phone || null, specialty || null, req.gym.id]
     );
     res.json(r.rows[0]);
   } catch (e) { console.error(e); res.status(500).json({ error: 'Server error' }); }
 });
 
-app.delete('/api/trainers/:id', auth, adminOnly, async (req, res) => {
+app.delete('/api/trainers/:id', auth, checkTenantAuth, adminOnly, async (req, res) => {
   try {
-    await pool.query('DELETE FROM trainers WHERE id=$1', [req.params.id]);
+    await pool.query('DELETE FROM trainers WHERE id=$1 AND gym_id=$2', [req.params.id, req.gym.id]);
     res.json({ ok: true });
   } catch (e) { console.error(e); res.status(500).json({ error: 'Server error' }); }
 });
 
 // ---------- payments ----------
-app.get('/api/payments', auth, adminOnly, async (req, res) => {
+app.get('/api/payments', auth, checkTenantAuth, adminOnly, async (req, res) => {
   const r = await pool.query(
     `SELECT pa.*, u.name AS member_name
      FROM payments pa JOIN users u ON u.id = pa.user_id
-     ORDER BY pa.created_at DESC LIMIT 200`
+     WHERE pa.gym_id = $1
+     ORDER BY pa.created_at DESC LIMIT 200`, [req.gym.id]
   );
   res.json(r.rows);
 });
 
-app.post('/api/payments', auth, adminOnly, async (req, res) => {
+app.post('/api/payments', auth, checkTenantAuth, adminOnly, async (req, res) => {
   const { user_id, amount, method, note, extend } = req.body;
   try {
+    // member must belong to this gym
+    const own = await pool.query(`SELECT id FROM users WHERE id=$1 AND gym_id=$2`, [user_id, req.gym.id]);
+    if (!own.rows.length) return res.status(404).json({ error: 'Member not found' });
     await pool.query('BEGIN');
     const p = await pool.query(
-      `INSERT INTO payments (user_id, amount, method, note) VALUES ($1,$2,$3,$4) RETURNING *`,
-      [user_id, amount, method || 'cash', note || null]
+      `INSERT INTO payments (user_id, amount, method, note, gym_id) VALUES ($1,$2,$3,$4,$5) RETURNING *`,
+      [user_id, amount, method || 'cash', note || null, req.gym.id]
     );
     // plan renew checkbox: expiry extend kar do
     if (extend) {
@@ -700,7 +666,7 @@ app.post('/api/payments', auth, adminOnly, async (req, res) => {
           + `\nMembership valid till: ${mem.expiry_date}.\nKeep going strong!`
         : `Payment received: ₹${Number(amount).toLocaleString('en-IN')} (${method || 'cash'}).`
           + `\nThank you for your payment.`;
-      notify(user_id, { email: mem.email, phone: mem.phone }, 'Payment received — Jaini Fitness Center', payBody)
+      notify(user_id, { email: mem.email, phone: mem.phone }, 'Payment received — ' + req.gym.name, payBody, req.gym.id)
         .catch((e) => console.error('notify fail:', e.message));
     }
     res.json(p.rows[0]);
@@ -710,40 +676,40 @@ app.post('/api/payments', auth, adminOnly, async (req, res) => {
   }
 });
 
-app.delete('/api/payments/:id', auth, adminOnly, async (req, res) => {
+app.delete('/api/payments/:id', auth, checkTenantAuth, adminOnly, async (req, res) => {
   try {
-    await pool.query('DELETE FROM payments WHERE id=$1', [req.params.id]);
+    await pool.query('DELETE FROM payments WHERE id=$1 AND gym_id=$2', [req.params.id, req.gym.id]);
     res.json({ ok: true });
   } catch (e) { console.error(e); res.status(500).json({ error: 'Server error' }); }
 });
 
 // ---------- attendance ----------
-app.post('/api/attendance', auth, async (req, res) => {
+app.post('/api/attendance', auth, checkTenantAuth, async (req, res) => {
   try {
     const uid = req.user.role === 'admin' ? Number(req.body.user_id) : req.user.id;
     if (!uid) return res.status(400).json({ error: 'Member is required' });
-    const u = await pool.query(`SELECT expiry_date::text AS expiry FROM users WHERE id=$1`, [uid]);
+    const u = await pool.query(`SELECT expiry_date::text AS expiry FROM users WHERE id=$1 AND gym_id=$2`, [uid, req.gym.id]);
     if (!u.rows.length) return res.status(404).json({ error: 'Member not found' });
     const exp = u.rows[0].expiry; // "YYYY-MM-DD" ya null
     const today = new Date().toISOString().slice(0, 10);
     if (exp && exp < today) return res.status(400).json({ error: 'Membership expired, please renew' });
-    const r = await pool.query('INSERT INTO attendance (user_id) VALUES ($1) RETURNING *', [uid]);
+    const r = await pool.query('INSERT INTO attendance (user_id, gym_id) VALUES ($1,$2) RETURNING *', [uid, req.gym.id]);
     res.json(r.rows[0]);
   } catch (e) { console.error(e); res.status(500).json({ error: 'Server error' }); }
 });
 
-app.get('/api/attendance', auth, adminOnly, async (req, res) => {
+app.get('/api/attendance', auth, checkTenantAuth, adminOnly, async (req, res) => {
   const date = req.query.date || new Date().toISOString().slice(0, 10);
   const r = await pool.query(
     `SELECT a.*, u.name AS member_name
      FROM attendance a JOIN users u ON u.id = a.user_id
-     WHERE a.checkin_at::date = $1
-     ORDER BY a.checkin_at DESC`, [date]);
+     WHERE a.checkin_at::date = $1 AND a.gym_id = $2
+     ORDER BY a.checkin_at DESC`, [date, req.gym.id]);
   res.json(r.rows);
 });
 
 // ---------- member apna data ----------
-app.get('/api/me/detail', auth, async (req, res) => {
+app.get('/api/me/detail', auth, checkTenantAuth, async (req, res) => {
   try {
     const u = await pool.query(
       `SELECT u.name, u.email, u.phone, u.join_date, u.expiry_date, u.photo, u.plan_id, u.trainer_id,
@@ -751,7 +717,7 @@ app.get('/api/me/detail', auth, async (req, res) => {
        FROM users u
        LEFT JOIN plans p ON p.id = u.plan_id
        LEFT JOIN trainers t ON t.id = u.trainer_id
-       WHERE u.id = $1`, [req.user.id]);
+       WHERE u.id = $1 AND u.gym_id = $2`, [req.user.id, req.gym.id]);
     if (!u.rows.length) return res.status(404).json({ error: 'User not found' });
     const pays = await pool.query(
       `SELECT id, amount, method, paid_on FROM payments WHERE user_id=$1 ORDER BY paid_on DESC, id DESC`, [req.user.id]);
@@ -769,31 +735,32 @@ app.get('/api/me/detail', auth, async (req, res) => {
 });
 
 // member apni photo khud badle
-app.post('/api/me/photo', auth, async (req, res) => {
+app.post('/api/me/photo', auth, checkTenantAuth, async (req, res) => {
   try {
     const { photo } = req.body;
     if (!photo) return res.status(400).json({ error: 'Photo is required' });
-    await pool.query(`UPDATE users SET photo=$2 WHERE id=$1`, [req.user.id, photo]);
+    await pool.query(`UPDATE users SET photo=$2 WHERE id=$1 AND gym_id=$3`, [req.user.id, photo, req.gym.id]);
     res.json({ ok: true });
   } catch (e) { console.error(e); res.status(500).json({ error: 'Server error' }); }
 });
 
 // ---------- notifications (admin) ----------
-app.get('/api/notifications', auth, adminOnly, async (req, res) => {
+app.get('/api/notifications', auth, checkTenantAuth, adminOnly, async (req, res) => {
   const r = await pool.query(
     `SELECT n.*, u.name AS member_name
      FROM notifications n LEFT JOIN users u ON u.id = n.user_id
-     ORDER BY n.created_at DESC LIMIT 100`);
+     WHERE n.gym_id = $1
+     ORDER BY n.created_at DESC LIMIT 100`, [req.gym.id]);
   res.json(r.rows);
 });
 
-app.get('/api/notifications/config', auth, adminOnly, (req, res) => {
+app.get('/api/notifications/config', auth, checkTenantAuth, adminOnly, (req, res) => {
   res.json({ email: !!mailer, whatsapp: !!(WA_TOKEN && WA_PHONE_ID) });
 });
 
-app.post('/api/notifications/:id/resend', auth, adminOnly, async (req, res) => {
+app.post('/api/notifications/:id/resend', auth, checkTenantAuth, adminOnly, async (req, res) => {
   try {
-    const n = (await pool.query('SELECT * FROM notifications WHERE id=$1', [req.params.id])).rows[0];
+    const n = (await pool.query('SELECT * FROM notifications WHERE id=$1 AND gym_id=$2', [req.params.id, req.gym.id])).rows[0];
     if (!n || !n.dest) return res.status(404).json({ error: 'Notification or recipient not found' });
     const r = n.channel === 'email'
       ? await sendEmail(n.dest, n.subject, n.body)
@@ -804,16 +771,17 @@ app.post('/api/notifications/:id/resend', auth, adminOnly, async (req, res) => {
 });
 
 // ---------- reports ----------
-app.get('/api/reports/summary', auth, adminOnly, async (req, res) => {
+app.get('/api/reports/summary', auth, checkTenantAuth, adminOnly, async (req, res) => {
+  const g = req.gym.id;
   const r = await pool.query(`
     SELECT
-      (SELECT count(*)::int FROM users WHERE role='member') AS total,
-      (SELECT count(*)::int FROM users WHERE role='member' AND expiry_date >= CURRENT_DATE) AS active,
-      (SELECT count(*)::int FROM users WHERE role='member' AND expiry_date >= CURRENT_DATE AND expiry_date <= CURRENT_DATE + 7) AS expiring,
-      (SELECT count(*)::int FROM users WHERE role='member' AND expiry_date < CURRENT_DATE) AS expired,
-      (SELECT COALESCE(sum(amount),0)::float FROM payments WHERE paid_on >= date_trunc('month', CURRENT_DATE)::date) AS month_income,
-      (SELECT count(*)::int FROM attendance WHERE checkin_at::date = CURRENT_DATE) AS today_attendance
-  `);
+      (SELECT count(*)::int FROM users WHERE role='member' AND gym_id=$1) AS total,
+      (SELECT count(*)::int FROM users WHERE role='member' AND gym_id=$1 AND expiry_date >= CURRENT_DATE) AS active,
+      (SELECT count(*)::int FROM users WHERE role='member' AND gym_id=$1 AND expiry_date >= CURRENT_DATE AND expiry_date <= CURRENT_DATE + 7) AS expiring,
+      (SELECT count(*)::int FROM users WHERE role='member' AND gym_id=$1 AND expiry_date < CURRENT_DATE) AS expired,
+      (SELECT COALESCE(sum(amount),0)::float FROM payments WHERE gym_id=$1 AND paid_on >= date_trunc('month', CURRENT_DATE)::date) AS month_income,
+      (SELECT count(*)::int FROM attendance WHERE gym_id=$1 AND checkin_at::date = CURRENT_DATE) AS today_attendance
+  `, [g]);
   res.json(r.rows[0]);
 });
 
