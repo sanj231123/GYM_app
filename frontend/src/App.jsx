@@ -360,7 +360,7 @@ function JoinPage() {
   const chosen = plans.find(p => String(p.id) === String(planId))
 
   return (
-    <div className="af-site">
+    <div className="af-site pub-site" style={{ '--accent': g.primary_color || undefined }}>
       <SiteNav user={user} onLogout={() => { logout().catch(() => {}); setUser(null) }} />
       <section id="top" className="sec join-top">
         <span className="sec-kicker">{g.name ? ('JOIN ' + g.name.toUpperCase()) : 'JOIN US'}</span>
@@ -434,6 +434,7 @@ function JoinPage() {
         )}
       </section>
       <ComboRow />
+      <Testimonials />
       <PlansPublic hideCTA />
       <ContactSec />
     </div>
@@ -454,6 +455,9 @@ function ContactSec() {
           <Soc kind="twitter" />
           <Soc kind="youtube" />
         </div>
+        {g.phone && (
+          <a className="cta-solid contact-call" href={'tel:' + g.phone.replace(/[^+\d]/g, '')}>📞 Call Now — {g.phone}</a>
+        )}
         <div className="contact-links">
           <a href={JOIN_URL} onClick={e => { e.preventDefault(); location.href = JOIN_URL }}>Contact Us</a>
           <a href="#blog" onClick={e => { e.preventDefault(); document.getElementById('blog').scrollIntoView({ behavior: 'smooth' }) }}>Ask A Question</a>
@@ -558,18 +562,33 @@ function Auth({ onLogin }) {
   }
 
   return (
-    <div className="af-site">
+    <div className="af-site pub-site" style={{ '--accent': g.primary_color || undefined }}>
       <SiteNav />
-      <div id="top" className="af-hero">
-        <div className="af-hero-left">
-          <span className="af-kicker">{g.name}</span>
-          <h2 className="af-title">Train Strong.<br />Track Smart.</h2>
-          <p className="af-addr">Your membership, payments and attendance — all in one place.</p>
-          <div className="af-card">
+      <div id="top" className="pub-hero">
+        <div className="pub-hero-bg"><Slider /></div>
+        <div className="pub-hero-inner">
+          <div className="pub-hero-left">
+            <span className="pub-kicker">{g.name ? g.name.toUpperCase() : 'WELCOME TO OUR GYM'}</span>
+            <h1 className="pub-display">Train Strong.<br />Live Stronger.</h1>
+            <p className="pub-sub">Your membership, payments and attendance — all in one place.
+              Strength, cardio and yoga under one roof, open every day.</p>
+            <div className="pub-cta-row">
+              <a className="cta-solid" href={JOIN_URL} onClick={e => { e.preventDefault(); location.href = JOIN_URL }}>Start Membership →</a>
+              {!open && <button className="cta-outline" onClick={() => setOpen(true)}>Member Login</button>}
+            </div>
+            <div className="pub-stats">
+              <span><b>500+</b><i>MEMBERS TRAINED</i></span>
+              <span><b>12+</b><i>PRO TRAINERS</i></span>
+              <span><b>7 Days</b><i>OPEN EVERY WEEK</i></span>
+            </div>
+          </div>
+          <div className="af-card pub-login">
             {!open ? (
               <div className="gate">
                 <h3 className="gate-title">MEMBER LOGIN</h3>
+                <p className="muted small" style={{ marginTop: 0 }}>Track your plan, payments and attendance.</p>
                 <button className="af-cta w100" onClick={() => setOpen(true)}>LOGIN NOW</button>
+                <a className="link-btn" href={JOIN_URL} onClick={e => { e.preventDefault(); location.href = JOIN_URL }}>New here? Join us →</a>
               </div>
             ) : (
               <>
@@ -610,15 +629,38 @@ function Auth({ onLogin }) {
             )}
           </div>
         </div>
-        <Slider>
-          <div className="slide-cap"><b>{g.name}</b><span>Strength · Cardio · Yoga</span></div>
-        </Slider>
       </div>
       <JumpStrip />
       <ComboRow />
+      <Testimonials />
       <PlansPublic />
       <ContactSec />
     </div>
+  )
+}
+
+// ---------- Testimonials (public site) ----------
+const QUOTES = [
+  { text: 'Joined last year for weight loss — the trainers pushed me the right way and my routine finally stuck. 14 kg down and counting.', name: 'Rajesh M.', tag: 'Member since 2025' },
+  { text: 'Best equipment in the area and the staff actually knows technique. My deadlift went from 60 kg to 140 kg in a year.', name: 'Priya S.', tag: 'Strength training' },
+  { text: 'Morning yoga and evening cardio under one plan — clean, well managed and worth every rupee.', name: 'Amit K.', tag: 'Yearly member' },
+]
+
+function Testimonials() {
+  return (
+    <section id="voices" className="sec pub-testimonials">
+      <span className="sec-kicker light">WHAT MEMBERS SAY</span>
+      <h2 className="sec-title">Real Results, Real People</h2>
+      <div className="quote-grid">
+        {QUOTES.map((q, k) => (
+          <figure key={k} className="quote-card">
+            <div className="quote-stars">★★★★★</div>
+            <blockquote>{q.text}</blockquote>
+            <figcaption><b>{q.name}</b><span>{q.tag}</span></figcaption>
+          </figure>
+        ))}
+      </div>
+    </section>
   )
 }
 
