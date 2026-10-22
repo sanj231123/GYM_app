@@ -10,6 +10,7 @@ const crypto = require('crypto');
 const { pool } = require('./db');
 const { migrate } = require('./migrate');
 const { seedFirstTenant } = require('./seed');
+const { DEFAULT_SETTINGS_TEMPLATES, buildMsg } = require('./templates');
 const {
   auth, adminOnly, setAuthCookie, clearAuthCookie,
   resolveTenant, checkTenantAuth, requireLiveGym,
@@ -317,6 +318,7 @@ app.get('/api/gym/settings', auth, checkTenantAuth, adminOnly, async (req, res) 
     name: g.name, logo: g.logo, primary_color: g.primary_color,
     address: g.address, phone: g.phone, hours: g.hours, map_url: g.map_url, settings: s,
     status: g.status, trial_ends_at: g.trial_ends_at, paid_until: g.paid_until,
+    default_templates: DEFAULT_SETTINGS_TEMPLATES,
     razorpay_key_id: g.razorpay_key_id ? g.razorpay_key_id.slice(0, 8) + '••••' + g.razorpay_key_id.slice(-4) : '',
     has_razorpay_key: !!g.razorpay_key_id,
   });
@@ -422,8 +424,11 @@ app.post('/api/members', auth, checkTenantAuth, adminOnly, requireLiveGym, async
     );
     // tell the new member about the account — the password is never included in messages
     const newId = r.rows[0].id;
-    const welcome = `Hi ${name.trim()},\n\nYour account is ready at ${req.gym.name}!\nWebsite: ${APP_URL}\nLogin email: ${email || '(admin will share)'}\n\nUse "Forgot Password" on the login page to set your password.`;
-    notify(newId, { email: email || null, phone: phone || null }, 'Welcome to ' + req.gym.name, welcome, req.gym.id)
+    const welcome = buildMsg(req.gym, 'welcome', { member: name.trim(), email: email || '(admin will share)' }, {
+      subject: 'Welcome to ' + req.gym.name,
+      body: `Hi ${name.trim()},\n\nYour account is ready at ${req.gym.name}!\nWebsite: ${APP_URL}\nLogin email: ${email || '(admin will share)'}\n\nUse "Forgot Password" on the login page to set your password.`,
+    });
+    notify(newId, { email: email || null, phone: phone || null }, welcome.subject, welcome.body, req.gym.id)
       .catch((e) => console.error('notify fail:', e.message));
     res.json({ id: newId });
   } catch (e) {
@@ -490,18 +495,20 @@ app.post('/api/inquiries', inquiryLimiter, async (req, res) => {
       [first_name, last_name || '', email, phone, pin_code || '', req.gym.id]
     );
     // email the gym owner about the new lead
-    const subject = 'New membership inquiry — ' + first_name + ' ' + (last_name || '');
-    const body = [
-      'New membership inquiry received on the website:',
-      '',
-      'Name:  ' + first_name + ' ' + (last_name || ''),
-      'Email: ' + email,
-      'Phone: ' + phone,
-      'PIN code: ' + (pin_code || '—'),
-    ].join('\n');
+    const lead = buildMsg(req.gym, 'inquiry', { member: first_name + ' ' + (last_name || ''), email, phone, pin: pin_code || '—' }, {
+      subject: 'New membership inquiry — ' + first_name + ' ' + (last_name || ''),
+      body: [
+        'New membership inquiry received on the website:',
+        '',
+        'Name:  ' + first_name + ' ' + (last_name || ''),
+        'Email: ' + email,
+        'Phone: ' + phone,
+        'PIN code: ' + (pin_code || '—'),
+      ].join('\n'),
+    });
     const owner = req.gym.email || process.env.SMTP_FROM || process.env.SMTP_USER;
-    const nr = await sendEmail(owner, subject, body);
-    await logNotif(null, 'email', owner, subject, body, nr.status, nr.error, req.gym.id);
+    const nr = await sendEmail(owner, lead.subject, lead.body);
+    await logNotif(null, 'email', owner, lead.subject, lead.body, nr.status, nr.error, req.gym.id);
     res.json({ ok: true, id: r.rows[0].id });
   } catch (e) { console.error(e); res.status(500).json({ error: 'Server error' }); }
 });
@@ -599,22 +606,29 @@ app.post('/api/razorpay/verify', razorpayLimiter, async (req, res) => {
           }
         }
 
-        const confirmMsg = [
-          'Hi ' + (inq.first_name || '') + ' ' + (inq.last_name || '') + ',',
-          '',
-          'Payment received — ₹' + Number(inq.plan_price || 0).toLocaleString('en-IN') + ' (' + (inq.plan_name || 'Membership') + ')',
-          'Welcome to ' + req.gym.name + '!',
-          '',
-          'Website: ' + APP_URL,
-          'See you at the gym 💪',
-        ].join('\n');
+        const payCon = buildMsg(req.gym, 'payment_online', {
+          member: (inq.first_name || '') + ' ' + (inq.last_name || ''),
+          plan: inq.plan_name || 'Membership',
+          amount: '₹' + Number(inq.plan_price || 0).toLocaleString('en-IN'),
+        }, {
+          subject: 'Payment confirmation — ' + req.gym.name,
+          body: [
+            'Hi ' + (inq.first_name || '') + ' ' + (inq.last_name || '') + ',',
+            '',
+            'Payment received — ₹' + Number(inq.plan_price || 0).toLocaleString('en-IN') + ' (' + (inq.plan_name || 'Membership') + ')',
+            'Welcome to ' + req.gym.name + '!',
+            '',
+            'Website: ' + APP_URL,
+            'See you at the gym 💪',
+          ].join('\n'),
+        });
         if (inq.email) {
-          const r1 = await sendEmail(inq.email, 'Payment confirmation — ' + req.gym.name, confirmMsg);
-          await logNotif(null, 'email', inq.email, 'Payment confirmation', confirmMsg, r1.status, r1.error, req.gym.id);
+          const r1 = await sendEmail(inq.email, payCon.subject, payCon.body);
+          await logNotif(null, 'email', inq.email, payCon.subject, payCon.body, r1.status, r1.error, req.gym.id);
         }
         if (inq.phone) {
-          const r2 = await sendWhatsApp(inq.phone, req.gym.name + '\n\n' + confirmMsg);
-          await logNotif(null, 'whatsapp', inq.phone, 'Payment confirmation', confirmMsg, r2.status, r2.error, req.gym.id);
+          const r2 = await sendWhatsApp(inq.phone, req.gym.name + '\n\n' + payCon.body);
+          await logNotif(null, 'whatsapp', inq.phone, payCon.subject, payCon.body, r2.status, r2.error, req.gym.id);
         }
       }
     }
@@ -747,12 +761,19 @@ app.post('/api/payments', auth, checkTenantAuth, adminOnly, requireLiveGym, asyn
       `SELECT name, email, phone, expiry_date FROM users WHERE id=$1`, [user_id]);
     const mem = info.rows[0];
     if (mem) {
-      const payBody = extend && mem.expiry_date
-        ? `Payment received: ₹${Number(amount).toLocaleString('en-IN')} (${method || 'cash'}).`
-          + `\nMembership valid till: ${mem.expiry_date}.\nKeep going strong!`
-        : `Payment received: ₹${Number(amount).toLocaleString('en-IN')} (${method || 'cash'}).`
-          + `\nThank you for your payment.`;
-      notify(user_id, { email: mem.email, phone: mem.phone }, 'Payment received — ' + req.gym.name, payBody, req.gym.id)
+      const payMsg = buildMsg(req.gym, 'payment_received', {
+        member: mem.name, method: method || 'cash', amount: '₹' + Number(amount).toLocaleString('en-IN'),
+        expiry: extend && mem.expiry_date ? mem.expiry_date : '',
+      }, extend && mem.expiry_date
+        ? {
+            subject: 'Payment received — ' + req.gym.name,
+            body: `Payment received: ₹${Number(amount).toLocaleString('en-IN')} (${method || 'cash'}).\nMembership valid till: ${mem.expiry_date}.\nKeep going strong!`,
+          }
+        : {
+            subject: 'Payment received — ' + req.gym.name,
+            body: `Payment received: ₹${Number(amount).toLocaleString('en-IN')} (${method || 'cash'}).\nThank you for your payment.`,
+          });
+      notify(user_id, { email: mem.email, phone: mem.phone }, payMsg.subject, payMsg.body, req.gym.id)
         .catch((e) => console.error('notify fail:', e.message));
     }
     res.json(p.rows[0]);

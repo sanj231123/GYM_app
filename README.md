@@ -193,6 +193,41 @@ sudo docker compose exec db pg_dump -U gym -d gymdb > ~/backup.sql    # backup
 
 Schema (auto-applied on first start): `database/schema.sql`
 
+#### Restoring a backup (verified procedure)
+
+```bash
+# 1. make the target database (a fresh container, or an existing one)
+sudo docker run -d --name gymdb-restore -e POSTGRES_PASSWORD=choose-strong postgres:16-alpine
+sudo docker exec gymdb-restore createdb -U postgres restoretest
+# the dump runs "OWNER TO gym" — create that role first
+sudo docker exec gymdb-restore psql -U postgres -d restoretest -c "CREATE ROLE gym;"
+
+# 2. restore (ON_ERROR_STOP makes any problem loud instead of silent)
+sudo docker exec -i gymdb-restore psql -U postgres -v ON_ERROR_STOP=1 -d restoretest -q < ~/backup.sql
+
+# 3. check it matches the live data (same row counts)
+sudo docker exec gymdb-restore psql -U postgres -d restoretest -t \
+  -c "SELECT 'gyms=' || count(*) FROM public.gyms;" \
+  -c "SELECT 'members=' || count(*) FROM public.users WHERE role='member';"
+
+# 4. throw the test container away
+sudo docker rm -f gymdb-restore
+```
+
+This restore path was tested — a dump from the live database restored with the
+same row counts in a throwaway container.
+
+#### Sales demo gym
+
+For a walkthrough with a new customer (sample members, plans, payments, check-ins):
+
+```bash
+sudo docker compose exec backend node scripts/seed-demo-gym.js
+# → Website: /g/demo-fit · Admin login: demo@demo.example (prints the password)
+```
+
+Delete it afterwards from the platform admin panel (its data cascades away).
+
 ### Frontend local build (optional, without Docker)
 
 ```bash
@@ -270,6 +305,7 @@ check"** step proves one gym can never read or write another gym's data.
 - **Online payments** — Razorpay checkout for new inquiries (test mode)
 - **Public site** — hero slider, plans, trainers, blog, membership inquiry form
 - **Multi-tenant SaaS** — per-gym branding, data isolation, trials, platform admin panel (see above)
+- **Custom message templates** — per-gym welcome / payment / inquiry texts with `{{placeholders}}` in Settings
 
 ---
 

@@ -695,8 +695,10 @@ function GymSettings() {
   const blank = {
     name: '', logo: '', primary_color: '', address: '', phone: '', hours: '', map_url: '',
     razorpay_key_id: '', razorpay_key_secret: '', has_razorpay_key: false, settings: {},
+    templates: {},
   }
   const [f, setF] = useState(blank)
+  const [tplDefaults, setTplDefaults] = useState({})
   const [maskedId, setMaskedId] = useState('')
   const [loaded, setLoaded] = useState(false)
   const [err, setErr] = useState('')
@@ -705,7 +707,8 @@ function GymSettings() {
 
   useEffect(() => {
     get('/gym/settings').then(r => {
-      setF({ ...blank, ...r, razorpay_key_id: '', razorpay_key_secret: '' })
+      setF({ ...blank, ...r, razorpay_key_id: '', razorpay_key_secret: '', templates: (r.settings && r.settings.templates) || {} })
+      setTplDefaults(r.default_templates || {})
       setMaskedId(r.razorpay_key_id || '')
       setLoaded(true)
     }).catch(e => setErr(e.message))
@@ -728,7 +731,7 @@ function GymSettings() {
       const body = {
         name: f.name, logo: f.logo || null, primary_color: f.primary_color || null,
         address: f.address || null, phone: f.phone || null, hours: f.hours || null,
-        map_url: f.map_url || null, settings: f.settings || {},
+        map_url: f.map_url || null, settings: { ...(f.settings || {}), templates: f.templates || {} },
       }
       if (f.razorpay_key_id && f.razorpay_key_id.length < 12) { setBusy(false); setErr('Razorpay key id looks too short — paste the full key (starts with rzp_)') ; return }
       if (f.razorpay_key_id && !f.razorpay_key_secret) { setBusy(false); setErr('Enter the Razorpay key secret together with the key id'); return }
@@ -741,7 +744,12 @@ function GymSettings() {
       // the key may have just changed — refresh only its display, keep the form as typed
       get('/gym/settings').then(r2 => {
         setMaskedId(r2.razorpay_key_id || '')
-        setF(fv => ({ ...fv, has_razorpay_key: r2.has_razorpay_key }))
+        setF(fv => ({
+          ...fv,
+          has_razorpay_key: r2.has_razorpay_key,
+          settings: r2.settings || {},
+          templates: (r2.settings && r2.settings.templates) || {},
+        }))
       }).catch(() => {})
     } catch (ex) { setErr(ex.message) } finally { setBusy(false) }
   }
@@ -777,7 +785,7 @@ function GymSettings() {
       </div>
       <div className="panel">
         <h3>Contact &amp; location</h3>
-        <form className="form">
+        <form className="form" onSubmit={e => e.preventDefault()}>
           <label className="muted small">Address</label>
           <input className="inp" value={f.address} onChange={e => setF({ ...f, address: e.target.value })} />
           <div className="grid2">
@@ -799,16 +807,52 @@ function GymSettings() {
         {f.has_razorpay_key
           ? <p className="muted small">Key on file: <code>{maskedId}</code></p>
           : <p className="muted small">No key saved — online payments fall back to the platform's shared key.</p>}
-        <form className="form">
+        <form className="form" onSubmit={e => e.preventDefault()}>
           <label className="muted small">Key id {f.has_razorpay_key ? '(type the full new key only if you want to replace the saved one)' : ''}</label>
           <input className="inp" value={f.razorpay_key_id} placeholder={f.has_razorpay_key ? maskedId : 'rzp_live_…'} onChange={e => setF({ ...f, razorpay_key_id: e.target.value })} />
           <label className="muted small">Key secret {f.has_razorpay_key ? '(enter again only to replace the saved one)' : ''}</label>
           <input className="inp" type="password" value={f.razorpay_key_secret} placeholder="••••••••" onChange={e => setF({ ...f, razorpay_key_secret: e.target.value })} />
         </form>
       </div>
+      <div className="panel">
+        <h3>Message templates</h3>
+        <p className="muted small">
+          Emails and WhatsApp messages sent to members. Leave a field empty to use the
+          default text. Placeholders: <code>&#123;&#123;member&#125;&#125;</code>, <code>&#123;&#123;gym&#125;&#125;</code>, <code>&#123;&#123;plan&#125;&#125;</code>, <code>&#123;&#123;amount&#125;&#125;</code>, <code>&#123;&#123;method&#125;&#125;</code>, <code>&#123;&#123;expiry&#125;&#125;</code>, <code>&#123;&#123;email&#125;&#125;</code>, <code>&#123;&#123;phone&#125;&#125;</code>, <code>&#123;&#123;website&#125;&#125;</code>.
+        </p>
+        {['welcome', 'payment_received', 'payment_online', 'inquiry'].map(key => {
+          const def = tplDefaults[key] || { subject: '', body: '' }
+          const cur = f.templates[key] || {}
+          const titles = {
+            welcome: 'Welcome message (new member)',
+            payment_received: 'Payment received (cash / gym payment)',
+            payment_online: 'Online payment confirmation',
+            inquiry: 'New inquiry alert (sent to you)',
+          }
+          return (
+            <div key={key} style={{ marginTop: 14 }}>
+              <b>{titles[key]}</b>
+              <input
+                className="inp" value={cur.subject || ''} placeholder={def.subject}
+                onChange={e => { const v = e.target.value; setF(fv => ({ ...fv, templates: { ...fv.templates, [key]: { ...cur, subject: v } } })) }}
+              />
+              <textarea
+                className="inp" rows={4} value={cur.body || ''} placeholder={def.body}
+                onChange={e => { const v = e.target.value; setF(fv => ({ ...fv, templates: { ...fv.templates, [key]: { ...cur, body: v } } })) }}
+                style={{ width: '100%' }}
+              />
+              {(cur.subject || cur.body) && (
+                <button type="button" className="link-btn" onClick={() => setF(fv => {
+                  const t = { ...fv.templates }; delete t[key]; return { ...fv, templates: t }
+                })}>Reset this to default</button>
+              )}
+            </div>
+          )
+        })}
+      </div>
       {err && <p className="error">{err}</p>}
       {ok && <p className="muted" style={{ color: '#1e8e3e' }}>{ok}</p>}
-      <button className="btn primary" form="gy-brand" onClick={save} disabled={busy}>{busy ? 'Saving…' : 'Save settings'}</button>
+      <button className="btn primary" onClick={save} disabled={busy}>{busy ? 'Saving…' : 'Save settings'}</button>
       <p className="muted small" style={{ marginTop: 6 }}>
         Tip: a fresh logo or color shows on the next page load (currently: {g.name || '…'}).
       </p>
