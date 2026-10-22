@@ -297,6 +297,65 @@ app.post('/api/auth/change-password', auth, async (req, res) => {
   }
 });
 
+// ---------- gym (tenant) branding + settings ----------
+// public branding of the gym this host belongs to
+app.get('/api/gym', async (req, res) => {
+  if (!req.gym) return res.status(404).json({ error: 'Gym not found' });
+  const g = req.gym;
+  res.json({
+    slug: g.slug, name: g.name, logo: g.logo, primary_color: g.primary_color,
+    address: g.address, phone: g.phone, hours: g.hours, map_url: g.map_url,
+  });
+});
+
+// full settings — admins only (masked Razorpay keys)
+app.get('/api/gym/settings', auth, checkTenantAuth, adminOnly, async (req, res) => {
+  if (!req.gym) return res.status(404).json({ error: 'Gym not found' });
+  const g = req.gym;
+  const s = g.settings || {};
+  res.json({
+    name: g.name, logo: g.logo, primary_color: g.primary_color,
+    address: g.address, phone: g.phone, hours: g.hours, map_url: g.map_url, settings: s,
+    status: g.status, trial_ends_at: g.trial_ends_at, paid_until: g.paid_until,
+    razorpay_key_id: g.razorpay_key_id ? g.razorpay_key_id.slice(0, 8) + '••••' + g.razorpay_key_id.slice(-4) : '',
+    has_razorpay_key: !!g.razorpay_key_id,
+  });
+});
+
+app.put('/api/gym/settings', auth, checkTenantAuth, adminOnly, requireLiveGym, async (req, res) => {
+  try {
+    if (!req.gym) return res.status(404).json({ error: 'Gym not found' });
+    const b = req.body || {};
+    const name = b.name !== undefined ? String(b.name).trim() : req.gym.name;
+    if (!name) return res.status(400).json({ error: 'Gym name is required' });
+    await pool.query(
+      `UPDATE gyms SET
+        name=$2,
+        logo=$3,
+        primary_color=$4,
+        address=$5,
+        phone=$6,
+        hours=$7,
+        map_url=$8,
+        razorpay_key_id = CASE WHEN $9::text IS NULL THEN razorpay_key_id ELSE $9::text END,
+        razorpay_key_secret = CASE WHEN $10::text IS NULL THEN razorpay_key_secret ELSE $10::text END,
+        settings = gyms.settings || $11::jsonb
+       WHERE id=$1`,
+      [req.gym.id, name,
+        b.logo !== undefined ? (b.logo || null) : req.gym.logo,
+        b.primary_color !== undefined ? (b.primary_color || null) : req.gym.primary_color,
+        b.address !== undefined ? (b.address || null) : req.gym.address,
+        b.phone !== undefined ? (b.phone || null) : req.gym.phone,
+        b.hours !== undefined ? (b.hours || null) : req.gym.hours,
+        b.map_url !== undefined ? (b.map_url || null) : req.gym.map_url,
+        b.razorpay_key_id !== undefined && b.razorpay_key_id !== '' ? b.razorpay_key_id : null,
+        b.razorpay_key_secret !== undefined && b.razorpay_key_secret !== '' ? b.razorpay_key_secret : null,
+        JSON.stringify(b.settings && typeof b.settings === 'object' ? b.settings : {})]
+    );
+    res.json({ ok: true });
+  } catch (e) { console.error(e); res.status(500).json({ error: 'Server error' }); }
+});
+
 // ---------- public gym branding (for the website header etc.) ----------
 app.get('/api/tenant/:slug', async (req, res) => {
   try {

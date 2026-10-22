@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react'
 import { login, register, logout, me, changePassword, forgotPassword, resetPassword, get, post, put, del } from './api'
 import { PlatformPage, PlatformPanel } from './Platform'
+import { TenantProvider, useGym } from './tenant'
 
 // shows a friendly page on any render crash instead of a blank white screen
 class AppBoundary extends React.Component {
@@ -73,11 +74,10 @@ export default function App() {
     : user.role === 'admin'
     ? <AdminPanel user={user} onLogout={onLogout} onChangePwd={changePwd} />
     : <MemberHome user={user} onLogout={onLogout} onChangePwd={changePwd} />
-  return <AppBoundary>{view}</AppBoundary>
+  return <AppBoundary><TenantProvider>{view}</TenantProvider></AppBoundary>
 }
 
 // ---------- Site-wide navbar (shared by login page and member home) ----------
-const AF = { address: 'D708 Rashmi Vihar, Vatva, Ahmedabad — 382025', phone: '+91 97373 80970', hours: 'Open daily · 6:00 AM – 10:00 PM' }
 
 const BLOG = [
   { title: 'Beginner mistakes that slow down progress', date: '12 Oct', img: '/bg-members.jpg', text: 'Most new lifters skip warm-ups and chase heavy numbers too early. Here is what to fix in your first month.' },
@@ -87,18 +87,22 @@ const BLOG = [
 
 const SLIDES = ['/girl-a.jpg', '/girl-b.jpg', '/hero.jpg', '/bg-trainers.jpg']
 
-// brand logo (shared badge)
+// brand logo — the gym's own image if uploaded, else the initials badge
 function BrandMark() {
-  return <span className="af-badge">JF</span>
+  const g = useGym()
+  if (g.logo) return <img className="af-badge" src={g.logo} alt={g.name} style={{ objectFit: 'cover' }} />
+  return <span className="af-badge">{g.logoText || 'G'}</span>
 }
 
 function SiteNav({ user, onLogout, onChangePwd }) {
+  const g = useGym()
+  const brand = (g.name || '').trim().split(/\s+/).slice(0, 2).join(' ').toUpperCase() || 'OUR GYM'
   const onJoin = (() => { try { return new URLSearchParams(location.search).get('page') === 'join' } catch { return false } })()
   const go = (id) => (e) => { e.preventDefault(); const el = document.getElementById(id); if (el) el.scrollIntoView({ behavior: 'smooth' }) }
   const home = (e) => { e.preventDefault(); if (onJoin) location.href = '/'; else document.getElementById('top').scrollIntoView({ behavior: 'smooth' }) }
   return (
     <header className="af-nav">
-      <a className="af-brand" href="/" onClick={home}><BrandMark /> JAINI FITNESS</a>
+      <a className="af-brand" href="/" onClick={home}><BrandMark /> {brand}</a>
       <nav className="af-links">
         <a href="#top" onClick={home}>Home</a>
         <a href="#plans" onClick={go('plans')}>Membership</a>
@@ -169,6 +173,7 @@ function PlansPublic({ hideCTA }) {
 
 // three blocks side by side: why join | trainers + join | blog + map
 function ComboRow() {
+  const g = useGym()
   const [list, setList] = useState([])
   const [post, setPost] = useState(null)
   useEffect(() => { get('/trainers').then(setList).catch(() => {}) }, [])
@@ -188,7 +193,7 @@ function ComboRow() {
             <li>Open daily — flexible morning to night</li>
           </ul>
           <div className="combo-stats">
-            <span><b>JAINI</b><i>FITNESS CENTER</i></span>
+            <span><b>{g.logoText}</b><i>{(g.name || '').toUpperCase()}</i></span>
             <span><b>12+</b><i>PROFESSIONAL TRAINERS</i></span>
             <span><b>7 Days</b><i>OPEN EVERY WEEK</i></span>
           </div>
@@ -221,10 +226,18 @@ function ComboRow() {
         <div className="combo-col">
           <span className="sec-kicker light">MAP</span>
           <h2 className="sec-title">Find Us</h2>
-          <div className="map-wrap" style={{ margin: 0, height: 380 }}>
-            <iframe title="Jaini Fitness Center map" src={'https://www.google.com/maps?q=' + encodeURIComponent('D708 Rashmi Vihar, Vatva, Ahmedabad 382025') + '&output=embed'} loading="lazy" />
-          </div>
-          <p className="muted small" style={{ marginTop: 10 }}>{AF.address}<br />{AF.phone}</p>
+          {(g.map_url || g.address) && (
+            <div className="map-wrap" style={{ margin: 0, height: 380 }}>
+              <iframe
+                title={(g.name || 'Our gym') + ' map'}
+                src={g.map_url || ('https://www.google.com/maps?q=' + encodeURIComponent((g.name ? g.name + ', ' : '') + g.address) + '&output=embed')}
+                loading="lazy"
+              />
+            </div>
+          )}
+          {(g.address || g.phone) && (
+            <p className="muted small" style={{ marginTop: 10 }}>{g.address}{g.address && g.phone ? <><br /></> : null}{g.phone}</p>
+          )}
         </div>
       </div>
       {post && (
@@ -277,6 +290,7 @@ function Soc({ kind }) {
 const JOIN_URL = '/?page=join'
 
 function JoinPage() {
+  const g = useGym()
   const [user, setUser] = useState(null)
   useEffect(() => {
     me().then(setUser).catch(() => {})
@@ -324,11 +338,11 @@ function JoinPage() {
           key: o.key_id,
           amount: o.amount,
           currency: 'INR',
-          name: 'Jaini Fitness Center',
+          name: g.name || 'Our Gym',
           description: o.plan ? o.plan.name : 'Membership',
           order_id: o.order_id,
           prefill: { name: (f.first_name + ' ' + f.last_name).trim(), email: f.email, contact: f.phone },
-          theme: { color: '#7c3aed' },
+          theme: { color: g.primary_color || '#7c3aed' },
           handler: (d) => {
             post('/razorpay/verify', { order_id: d.razorpay_order_id, payment_id: d.razorpay_payment_id, signature: d.razorpay_signature, inquiry_id: inqId })
               .then(() => setStep(3))
@@ -348,7 +362,7 @@ function JoinPage() {
     <div className="af-site">
       <SiteNav user={user} onLogout={() => { logout().catch(() => {}); setUser(null) }} />
       <section id="top" className="sec join-top">
-        <span className="sec-kicker">JOIN JAINI FITNESS</span>
+        <span className="sec-kicker">{g.name ? ('JOIN ' + g.name.toUpperCase()) : 'JOIN US'}</span>
         <h2 className="sec-title">Membership Inquiry</h2>
         <div className="join-steps" style={{ display: 'flex', gap: 10 }}>
           {['Your Details', 'Choose Plan', 'Payment'].map((s, k) => (
@@ -360,7 +374,7 @@ function JoinPage() {
 
         {step === 1 && (
           <form className="inq-card form inq-form" onSubmit={submitDetails}>
-            <p className="af-addr">{AF.address}<br />{AF.phone}</p>
+            <p className="af-addr">{g.address}<br />{g.phone}</p>
             <div className="grid2">
               <input className="inp" placeholder="First Name *" value={f.first_name} onChange={e => setF({ ...f, first_name: e.target.value })} required />
               <input className="inp" placeholder="Last Name" value={f.last_name} onChange={e => setF({ ...f, last_name: e.target.value })} />
@@ -368,7 +382,7 @@ function JoinPage() {
             <input className="inp" type="email" placeholder="Email *" value={f.email} onChange={e => setF({ ...f, email: e.target.value })} required />
             <input className="inp" type="tel" placeholder="Mobile Phone *" value={f.phone} onChange={e => setF({ ...f, phone: e.target.value })} required />
             <input className="inp" placeholder="PIN code" value={f.pin_code} onChange={e => setF({ ...f, pin_code: e.target.value })} />
-            <p className="muted small inq-consent">By submitting your contact details, you consent to receive communication from Jaini Fitness Center via phone calls, SMS, WhatsApp, and email regarding memberships and offers. You may opt out at any time.</p>
+            <p className="muted small inq-consent">By submitting your contact details, you consent to receive communication from {g.name} via phone calls, SMS, WhatsApp, and email regarding memberships and offers. You may opt out at any time.</p>
             <button className="af-cta" type="submit" disabled={busy}>{busy ? 'Submitting…' : 'VIEW MEMBERSHIP OPTIONS'}</button>
           </form>
         )}
@@ -407,7 +421,7 @@ function JoinPage() {
         {step === 3 && (
           <div className="inq-card">
             <p className="inq-ok">Enrollment request received 🎉</p>
-            <p><b>{f.first_name} {f.last_name}</b>, your journey at Jaini Fitness Center starts now.</p>
+            <p><b>{f.first_name} {f.last_name}</b>, your journey at {g.name} starts now.</p>
             <ul className="plan-feat">
               <li>Plan: <b>{chosen ? chosen.name : '—'}</b> ({chosen ? rupee(chosen.price) : '—'})</li>
               <li>Payment: <b>{payMode === 'gym' ? 'Pay at the gym' : 'Online (Razorpay)'}</b></li>
@@ -426,12 +440,13 @@ function JoinPage() {
 }
 
 function ContactSec() {
+  const g = useGym()
   return (
     <>
       <section id="contact" className="contact-banner">
-        <h2>JAINI FITNESS CENTER</h2>
-        <p>{AF.address}</p>
-        <p className="contact-phone">{AF.phone} · {AF.hours}</p>
+        <h2>{(g.name || '').toUpperCase()}</h2>
+        {g.address && <p>{g.address}</p>}
+        {(g.phone || g.hours) && <p className="contact-phone">{[g.phone, g.hours].filter(Boolean).join(' · ')}</p>}
         <div className="social-row">
           <Soc kind="facebook" />
           <Soc kind="instagram" />
@@ -446,7 +461,7 @@ function ContactSec() {
       <footer className="site-footer">
         <div className="foot-grid">
           <div className="foot-brand">
-            <div className="foot-logo"><BrandMark /><span>JAINI FITNESS</span></div>
+            <div className="foot-logo"><BrandMark /><span>{(g.name || '').trim().split(/\s+/).slice(0, 2).join(' ').toUpperCase()}</span></div>
             <b>Download Our App</b>
             <p className="muted small">Android &amp; iOS apps — coming soon.</p>
           </div>
@@ -472,7 +487,7 @@ function ContactSec() {
             <a href="#plans" onClick={e => { e.preventDefault(); document.getElementById('plans').scrollIntoView({ behavior: 'smooth' }) }}>Corporate Membership</a>
           </div>
         </div>
-        <div className="foot-bottom">© Jaini Fitness Center {new Date().getFullYear()}. All rights reserved.</div>
+        <div className="foot-bottom">© {g.name || 'Our Gym'} {new Date().getFullYear()}. All rights reserved.</div>
       </footer>
     </>
   )
@@ -493,6 +508,7 @@ function JumpStrip() {
 
 // ---------- Login / Register / Forgot / Reset (marketing site + card) ----------
 function Auth({ onLogin }) {
+  const g = useGym()
   const [open, setOpen] = useState(() => {
     try {
       const sp = new URLSearchParams(location.search)
@@ -545,7 +561,7 @@ function Auth({ onLogin }) {
       <SiteNav />
       <div id="top" className="af-hero">
         <div className="af-hero-left">
-          <span className="af-kicker">Jaini Fitness Center</span>
+          <span className="af-kicker">{g.name}</span>
           <h2 className="af-title">Train Strong.<br />Track Smart.</h2>
           <p className="af-addr">Your membership, payments and attendance — all in one place.</p>
           <div className="af-card">
@@ -594,7 +610,7 @@ function Auth({ onLogin }) {
           </div>
         </div>
         <Slider>
-          <div className="slide-cap"><b>Jaini Fitness Center</b><span>Strength · Cardio · Yoga</span></div>
+          <div className="slide-cap"><b>{g.name}</b><span>Strength · Cardio · Yoga</span></div>
         </Slider>
       </div>
       <JumpStrip />
@@ -606,7 +622,7 @@ function Auth({ onLogin }) {
 }
 
 // ---------- Admin panel ----------
-const TABS = ['Dashboard', 'Members', 'Payments', 'Plans', 'Trainers', 'Notifications']
+const TABS = ['Dashboard', 'Members', 'Payments', 'Plans', 'Trainers', 'Notifications', 'Settings']
 
 // per-page background photo (behind the whole admin page)
 const TAB_BG = {
@@ -616,6 +632,7 @@ const TAB_BG = {
   Plans: '/bg-plans.jpg',
   Trainers: '/bg-trainers.jpg',
   Notifications: '/banner.jpg',
+  Settings: '/bg-plans.jpg',
 }
 
 function TabBanner({ title, img }) {
@@ -624,16 +641,36 @@ function TabBanner({ title, img }) {
 // (TabBanner is not used right now — admin pages use the full-page background instead)
 
 function AdminPanel({ user, onLogout, onChangePwd }) {
+  const g = useGym()
   const [tab, setTab] = useState('Dashboard')
+  const [sub, setSub] = useState(null)
+  // subscription banner: the trial / paid period is over (writes are blocked, reads still work)
+  useEffect(() => {
+    get('/gym/settings').then(r => setSub(r)).catch(() => {})
+  }, [])
+  const subExpired = sub && (
+    (sub.status === 'trial' && sub.trial_ends_at && new Date(sub.trial_ends_at) <= new Date())
+    || (sub.status === 'active' && sub.paid_until && new Date(sub.paid_until) <= new Date())
+  )
   return (
     <div>
       <header className="topbar">
-        <h1 className="logo-sm">💪 Jaini Fitness Center — Admin</h1>
+        <h1 className="logo-sm">💪 {g.name || 'Our Gym'} — Admin</h1>
         <div className="grow" />
         <span className="muted">{user.name}</span>
         <button className="btn ghost" onClick={onChangePwd}>Password</button>
         <button className="btn ghost" onClick={onLogout}>Logout</button>
       </header>
+      {subExpired && (
+        <div className="panel" style={{ margin: '10px 16px', borderLeft: '4px solid #f29900' }}>
+          <b>Subscription required</b>
+          <p className="muted">
+            Your gym's {sub.status === 'trial' ? 'trial' : 'paid period'} has ended.
+            The site still works and members can view their data, but saving changes is disabled
+            until the subscription is renewed — please contact the platform owner.
+          </p>
+        </div>
+      )}
       <nav className="tabs">
         {TABS.map(t => (
           <button key={t} className={t === tab ? 'tab active' : 'tab'} onClick={() => setTab(t)}>{t}</button>
@@ -646,7 +683,135 @@ function AdminPanel({ user, onLogout, onChangePwd }) {
         {tab === 'Plans' && <Plans />}
         {tab === 'Trainers' && <Trainers />}
         {tab === 'Notifications' && <Notifications />}
+        {tab === 'Settings' && <GymSettings />}
       </main>
+    </div>
+  )
+}
+
+// ---------- Settings tab: gym branding, contact info and Razorpay keys ----------
+function GymSettings() {
+  const g = useGym()
+  const blank = {
+    name: '', logo: '', primary_color: '', address: '', phone: '', hours: '', map_url: '',
+    razorpay_key_id: '', razorpay_key_secret: '', has_razorpay_key: false, settings: {},
+  }
+  const [f, setF] = useState(blank)
+  const [maskedId, setMaskedId] = useState('')
+  const [loaded, setLoaded] = useState(false)
+  const [err, setErr] = useState('')
+  const [ok, setOk] = useState('')
+  const [busy, setBusy] = useState(false)
+
+  useEffect(() => {
+    get('/gym/settings').then(r => {
+      setF({ ...blank, ...r, razorpay_key_id: '', razorpay_key_secret: '' })
+      setMaskedId(r.razorpay_key_id || '')
+      setLoaded(true)
+    }).catch(e => setErr(e.message))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  const pickLogo = (e) => {
+    const file = e.target.files && e.target.files[0]
+    if (!file) return
+    if (file.size > 2 * 1024 * 1024) return alert('Logo must be under 2 MB')
+    const r = new FileReader()
+    r.onload = () => setF(fv => ({ ...fv, logo: r.result }))
+    r.readAsDataURL(file)
+  }
+
+  const save = async (e) => {
+    e.preventDefault()
+    setErr(''); setOk(''); setBusy(true)
+    try {
+      const body = {
+        name: f.name, logo: f.logo || null, primary_color: f.primary_color || null,
+        address: f.address || null, phone: f.phone || null, hours: f.hours || null,
+        map_url: f.map_url || null, settings: f.settings || {},
+      }
+      if (f.razorpay_key_id && f.razorpay_key_id.length < 12) { setBusy(false); setErr('Razorpay key id looks too short — paste the full key (starts with rzp_)') ; return }
+      if (f.razorpay_key_id && !f.razorpay_key_secret) { setBusy(false); setErr('Enter the Razorpay key secret together with the key id'); return }
+      if (f.razorpay_key_secret) { body.razorpay_key_id = f.razorpay_key_id; body.razorpay_key_secret = f.razorpay_key_secret }
+      await put('/gym/settings', body)
+      setOk('Saved ✅ Reload the site to see the new branding everywhere.')
+      // live-apply branding without a full reload
+      if (f.primary_color) document.documentElement.style.setProperty('--primary', f.primary_color)
+      setF(fv => ({ ...fv, razorpay_key_secret: '' }))
+      // the key may have just changed — refresh only its display, keep the form as typed
+      get('/gym/settings').then(r2 => {
+        setMaskedId(r2.razorpay_key_id || '')
+        setF(fv => ({ ...fv, has_razorpay_key: r2.has_razorpay_key }))
+      }).catch(() => {})
+    } catch (ex) { setErr(ex.message) } finally { setBusy(false) }
+  }
+
+  if (!loaded && !err) return <p className="muted">Loading…</p>
+  if (err && !loaded) return <p className="error">{err}</p>
+
+  return (
+    <div style={{ maxWidth: 720 }}>
+      <div className="panel">
+        <h3>Gym branding</h3>
+        <p className="muted small">This appears across your website, member area and payment screen.</p>
+        <form onSubmit={save} className="form" id="gy-brand">
+          <div className="grid2">
+            <div>
+              <label className="muted small">Logo (optional, under 2 MB)</label>
+              <input type="file" accept="image/*" onChange={pickLogo} className="inp" />
+            </div>
+            <div>
+              <label className="muted small">Brand color</label>
+              <div className="row" style={{ gap: 8 }}>
+                <input
+                  type="color" value={f.primary_color || '#7c3aed'} onChange={e => setF({ ...f, primary_color: e.target.value })}
+                  style={{ width: 46, height: 40, border: 'none', background: 'none', padding: 0 }} aria-label="Pick brand color"
+                />
+                <input className="inp" value={f.primary_color} placeholder="#7c3aed" onChange={e => setF({ ...f, primary_color: e.target.value })} />
+              </div>
+            </div>
+          </div>
+          <label className="muted small">Gym name (shown on the website and receipts)</label>
+          <input className="inp" value={f.name} onChange={e => setF({ ...f, name: e.target.value })} required />
+        </form>
+      </div>
+      <div className="panel">
+        <h3>Contact &amp; location</h3>
+        <form className="form">
+          <label className="muted small">Address</label>
+          <input className="inp" value={f.address} onChange={e => setF({ ...f, address: e.target.value })} />
+          <div className="grid2">
+            <div>
+              <label className="muted small">Phone</label>
+              <input className="inp" value={f.phone} onChange={e => setF({ ...f, phone: e.target.value })} />
+            </div>
+            <div>
+              <label className="muted small">Timings</label>
+              <input className="inp" value={f.hours} placeholder="Open daily · 6:00 AM – 10:00 PM" onChange={e => setF({ ...f, hours: e.target.value })} />
+            </div>
+          </div>
+          <label className="muted small">Google Maps link or embed URL (optional)</label>
+          <input className="inp" value={f.map_url} placeholder="https://www.google.com/maps?q=…" onChange={e => setF({ ...f, map_url: e.target.value })} />
+        </form>
+      </div>
+      <div className="panel">
+        <h3>Online payments (Razorpay)</h3>
+        {f.has_razorpay_key
+          ? <p className="muted small">Key on file: <code>{maskedId}</code></p>
+          : <p className="muted small">No key saved — online payments fall back to the platform's shared key.</p>}
+        <form className="form">
+          <label className="muted small">Key id {f.has_razorpay_key ? '(type the full new key only if you want to replace the saved one)' : ''}</label>
+          <input className="inp" value={f.razorpay_key_id} placeholder={f.has_razorpay_key ? maskedId : 'rzp_live_…'} onChange={e => setF({ ...f, razorpay_key_id: e.target.value })} />
+          <label className="muted small">Key secret {f.has_razorpay_key ? '(enter again only to replace the saved one)' : ''}</label>
+          <input className="inp" type="password" value={f.razorpay_key_secret} placeholder="••••••••" onChange={e => setF({ ...f, razorpay_key_secret: e.target.value })} />
+        </form>
+      </div>
+      {err && <p className="error">{err}</p>}
+      {ok && <p className="muted" style={{ color: '#1e8e3e' }}>{ok}</p>}
+      <button className="btn primary" form="gy-brand" onClick={save} disabled={busy}>{busy ? 'Saving…' : 'Save settings'}</button>
+      <p className="muted small" style={{ marginTop: 6 }}>
+        Tip: a fresh logo or color shows on the next page load (currently: {g.name || '…'}).
+      </p>
     </div>
   )
 }
@@ -972,6 +1137,7 @@ function Notifications() {
 
 // ---------- Member home ----------
 function MemberHome({ user, onLogout, onChangePwd }) {
+  const g = useGym()
   const [d, setD] = useState(null)
   const load = () => get('/me/detail').then(setD).catch(e => alert(e.message))
   useEffect(() => { load() }, [])
@@ -1003,7 +1169,7 @@ function MemberHome({ user, onLogout, onChangePwd }) {
 
       <section className="hero-m">
         <div className="hero-inner">
-          <h1>Welcome to Jaini Fitness Center</h1>
+          <h1>Welcome to {g.name || 'Our Gym'}</h1>
           <p className="hero-sub">The fitness facility for all of your needs</p>
           <div className="hero-chip-row">
             <span className={'chip ' + cls}>{label}</span>

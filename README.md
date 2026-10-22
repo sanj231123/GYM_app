@@ -1,7 +1,11 @@
-# 💪 Jaini Fitness Center — Gym Management System
+# 💪 GymFit Platform — Multi-Tenant Gym Management System
 
-A complete gym-management web application — members, plans, payments (online + offline),
-membership expiry alerts, attendance check-in, trainers, blog, and email/SMS notifications.
+A complete, sellable **gym-management SaaS** — every gym gets its own private website and
+dashboard: members, plans, payments (online + offline), membership expiry alerts,
+attendance check-in, trainers, blog, and email/WhatsApp notifications. Gyms self-signup
+with a free trial; the platform owner manages them from one panel.
+
+A fresh install seeds **Jaini Fitness Center** as the first gym (the original tenant).
 
 **Author:** Sanjay Prajapati ([GitHub: sanj231123](https://github.com/sanj231123) ·
 [Docker Hub: sanj231123](https://hub.docker.com/u/sanj231123))
@@ -215,6 +219,41 @@ Not committed to git — always create it from `.env.example`.
 | `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASS` / `SMTP_FROM` | email notifications |
 | `WHATSAPP_TOKEN` / `WHATSAPP_PHONE_ID` | WhatsApp confirmations |
 | `APP_URL` | the public address put inside messages (e.g. password-reset links) |
+| `PLATFORM_DOMAIN` | the platform's own domain (e.g. `example.com`) — enables subdomains and the landing page |
+| `TRIAL_DAYS` | free-trial length for new gyms (default `14`) |
+| `PLATFORM_ADMIN_EMAIL` / `PLATFORM_ADMIN_PASSWORD` | platform owner account (created once) |
+| `CADDY_EMAIL` | email for HTTPS certificates in the production compose |
+
+---
+
+## Multi-Tenant SaaS Mode (run many gyms from one deployment)
+
+This app is a **platform**: every gym that signs up gets its own private site and
+dashboard, with its data fully separated from every other gym.
+
+- **New gym signup** — open `/register` on the platform domain → "Register your gym"
+  (gym name, web address/slug, owner login). The owner gets a **14-day free trial**
+  (`TRIAL_DAYS` in `.env`) and lands directly in `/g/<slug>`.
+- **The gym's web address** — `https://<slug>.<PLATFORM_DOMAIN>` (set up automatically
+  by Caddy with on-demand TLS) or the path fallback `https://<domain>/g/<slug>`.
+- **Platform landing page** — `/register` markets the platform and hosts the signup form.
+- **Platform owner panel** — log in with `PLATFORM_ADMIN_EMAIL` on the **bare platform
+  domain** (no `/g/...`): list all gyms with member and revenue counts, **suspend /
+  activate** a gym, and **Mark paid** (enter months → extends `paid_until`).
+- **Trial / subscription behaviour** — once the trial or paid period ends, the gym's
+  site and dashboards still **read** fine but admin **writes** are blocked with a
+  clear "Subscription required" screen; the gym owner sees a renewal banner.
+- **Per-gym branding** — the gym admin opens **Settings** (admin panel) and sets the
+  logo, gym name, brand color, address, phone, timings, map link and its **own
+  Razorpay keys** (stored masked; falls back to the platform's shared key).
+- **Demo gym for sales demos** — `docker compose exec backend node scripts/seed-demo-gym.js`
+  creates `demo-fit` with sample data and prints the demo login.
+- **HTTPS + backups** — `docker-compose.prod.yml` runs Caddy (HTTPS for the platform
+  domain and every gym subdomain) and a nightly database backup into `./backups`
+  (daily dump, keeps the last 14).
+
+Tenant isolation is tested on every deploy — the CI **"Multi-tenant isolation
+check"** step proves one gym can never read or write another gym's data.
 
 ---
 
@@ -230,6 +269,7 @@ Not committed to git — always create it from `.env.example`.
 - **Members self-service** — register, login, view own plan/payments, check-in, upload photo
 - **Online payments** — Razorpay checkout for new inquiries (test mode)
 - **Public site** — hero slider, plans, trainers, blog, membership inquiry form
+- **Multi-tenant SaaS** — per-gym branding, data isolation, trials, platform admin panel (see above)
 
 ---
 

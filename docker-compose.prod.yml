@@ -1,7 +1,8 @@
 # Production overlay for VPS/HTTPS deploys — self-sufficient (run alone, not as override):
 #   docker compose -f docker-compose.prod.yml up -d --build
 # Adds a Caddy edge container that serves HTTPS for the platform domain and
-# every <slug>.<PLATFORM_DOMAIN> gym subdomain with on-demand TLS.
+# every <slug>.<PLATFORM_DOMAIN> gym subdomain with on-demand TLS, plus a
+# nightly database backup (./backups, keeps 14 days).
 # Required .env values: PLATFORM_DOMAIN (e.g. example.com), CADDY_EMAIL,
 # NODE_ENV=production, JWT_SECRET, POSTGRES_PASSWORD, BOOTSTRAP_ADMIN_*.
 
@@ -16,6 +17,31 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-gymdb}
     volumes:
       - dbdata:/var/lib/postgresql/data
+    restart: unless-stopped
+
+  # nightly database backup (02:17 UTC each day), keeps the last 14 files
+  db-backup:
+    image: postgres:16-alpine
+    environment:
+      PGHOST: db
+      PGUSER: ${POSTGRES_USER:-gym}
+      PGPASSWORD: ${POSTGRES_PASSWORD:?set in .env}
+      PGDATABASE: ${POSTGRES_DB:-gymdb}
+    volumes:
+      - ./backups:/backups
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        echo "nightly backup active — dumps to /backups, keeping 14"
+        while true; do
+          d=$(date -u +%F)
+          pg_dump | gzip > "/backups/gymdb-$$d.sql.gz" && echo "backed up $$d"
+          find /backups -name 'gymdb-*.sql.gz' -mtime +14 -delete
+          sleep 86400
+        done
+    depends_on:
+      - db
     restart: unless-stopped
 
   backend:
