@@ -921,3 +921,47 @@ body {
   .quote-grid { grid-template-columns: 1fr; }
   .pub-stats { gap: 24px; }
 }
+
+/* ==== member avatar click-to-change ==== */
+.avatar-click {
+  position: relative;
+  display: inline-block;
+  cursor: pointer;
+  border-radius: 50%;
+  line-height: 0;
+  -webkit-tap-highlight-color: transparent;
+}
+.avatar-click .avatar-big { display: block; }
+.avatar-click .cam-badge {
+  position: absolute;
+  right: 2px;
+  bottom: 6px;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  background: var(--primary, #4657e7);
+  color: #fff;
+  border: 2px solid #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
+  pointer-events: none;
+  transition: transform 0.15s ease, background 0.15s ease;
+}
+.avatar-click:hover .cam-badge {
+  transform: scale(1.12);
+  background: var(--primary-dark, #3746c9);
+}
+.avatar-click::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  box-shadow: inset 0 0 0 0 transparent;
+  transition: box-shadow 0.15s ease;
+  pointer-events: none;
+}
+.avatar-click:hover::after {
+  box-shadow: inset 0 0 0 3px var(--primary, #4657e7);
+}

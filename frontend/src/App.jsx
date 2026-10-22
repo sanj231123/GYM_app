@@ -1266,7 +1266,13 @@ function MemberHome({ user, onLogout, onChangePwd }) {
             <span className="chip chip-dark">{d.trainer_name || 'No trainer'}</span>
             <span className="chip chip-dark">Expiry: {fmt(d.expiry_date)}</span>
           </div>
-          {d.photo ? <img className="avatar-big hero-avatar" src={d.photo} alt="" /> : <div className="avatar-big avatar-fall light">{(d.name || '?')[0]}</div>}
+          <label className="avatar-click" title="Change photo">
+            {d.photo ? <img className="avatar-big hero-avatar" src={d.photo} alt="" /> : <div className="avatar-big avatar-fall light">{(d.name || '?')[0]}</div>}
+            <span className="cam-badge" aria-hidden="true">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2"><path d="M4 7h3l1.5-2h7L17 7h3a1 1 0 0 1 1 1v11a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V8a1 1 0 0 1 1-1z" /><circle cx="12" cy="13" r="3.4" /></svg>
+            </span>
+            <input type="file" accept="image/*" onChange={pickSelf} style={{ display: 'none' }} />
+          </label>
           <div className="hero-cta">
             <button className={'hero-btn ' + (d.checked_today ? '' : 'pulse')} onClick={checkin} disabled={d.checked_today > 0}>
               {d.checked_today ? '✓ Checked in today — keep going!' : 'Check-in Now'}
