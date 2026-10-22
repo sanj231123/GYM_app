@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react'
 import { login, register, logout, me, changePassword, forgotPassword, resetPassword, get, post, put, del } from './api'
+import { PlatformPage, PlatformPanel } from './Platform'
 
 // shows a friendly page on any render crash instead of a blank white screen
 class AppBoundary extends React.Component {
@@ -59,10 +60,17 @@ export default function App() {
   }
 
   let view
+  const path = typeof location !== 'undefined' ? location.pathname : '/'
   if (joinNow) view = <JoinPage />
+  else if (path.startsWith('/register')) view = <PlatformPage />
+  else if (path.startsWith('/platform-admin')) view = user
+    ? (user.role === 'platform_admin' ? <PlatformPanel user={user} /> : <div className="center panel" style={{ margin: 60 }}>Only the platform owner can open this page.</div>)
+    : <Auth onLogin={setUser} />
   else if (loading) view = <div className="center">Loading…</div>
   else if (!user) view = <Auth onLogin={setUser} />
-  else view = user.role === 'admin'
+  else view = user.role === 'platform_admin'
+    ? <PlatformPanel user={user} />
+    : user.role === 'admin'
     ? <AdminPanel user={user} onLogout={onLogout} onChangePwd={changePwd} />
     : <MemberHome user={user} onLogout={onLogout} onChangePwd={changePwd} />
   return <AppBoundary>{view}</AppBoundary>

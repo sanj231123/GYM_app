@@ -12,7 +12,7 @@ const { migrate } = require('./migrate');
 const { seedFirstTenant } = require('./seed');
 const {
   auth, adminOnly, setAuthCookie, clearAuthCookie,
-  resolveTenant, checkTenantAuth,
+  resolveTenant, checkTenantAuth, requireLiveGym,
   globalLimiter, authLimiter, inquiryLimiter, razorpayLimiter,
   notFound, errorHandler,
 } = require('./middleware');
@@ -46,6 +46,7 @@ app.use(morgan(':date[iso] :method :url :status :response-time ms'));
 app.use(globalLimiter);
 app.use(express.json({ limit: '3mb' }));
 app.use('/api', resolveTenant); // every /api request carries its gym (tenant) context
+app.use('/api/platform', require('./routes-platform')); // self-signup + platform admin
 
 // ---------- helpers ----------
 const publicUser = (u) => ({
@@ -137,6 +138,17 @@ async function init() {
     );
     console.log('Bootstrap admin created:', BOOT_EMAIL, '— change this password after first login');
   }
+  // platform admin (manages every gym) — optional, created once from env
+  const anyPlatform = await pool.query(`SELECT id FROM users WHERE role='platform_admin' LIMIT 1`);
+  if (!anyPlatform.rows.length && (process.env.PLATFORM_ADMIN_EMAIL || '').trim()
+      && (process.env.PLATFORM_ADMIN_PASSWORD || '').length >= 8) {
+    const hash = await bcrypt.hash(process.env.PLATFORM_ADMIN_PASSWORD, 12);
+    await pool.query(
+      `INSERT INTO users (name, email, password_hash, role, gym_id) VALUES ('Platform Admin',$1,$2,'platform_admin',NULL)`,
+      [process.env.PLATFORM_ADMIN_EMAIL.toLowerCase().trim(), hash]
+    );
+    console.log('Platform admin created:', process.env.PLATFORM_ADMIN_EMAIL);
+  }
   // default plans for gym #1 (idempotent)
   const gid = await pool.query(`SELECT id FROM gyms ORDER BY id LIMIT 1`);
   if (gid.rows.length) {
@@ -163,9 +175,24 @@ app.get('/api/health', async (req, res) => {
 app.post('/api/auth/login', authLimiter, async (req, res) => {
   try {
     const { email, password } = req.body;
-    if (!req.gym) return res.status(404).json({ error: 'Gym not found for this address' });
+    if (!req.gym) {
+      // no gym for this host (e.g. platform root): only platform admins may login
+      const pa = await pool.query(`SELECT * FROM users WHERE email=$1 AND role='platform_admin'`, [(email || '').toLowerCase().trim()]);
+      const pu = pa.rows[0];
+      if (!pu || !(await bcrypt.compare(password || '', pu.password_hash))) {
+        return res.status(401).json({ error: 'Wrong email or password' });
+      }
+      const ptok = jwt.sign({ id: pu.id, role: pu.role }, JWT_SECRET, { expiresIn: '7d' });
+      setAuthCookie(res, ptok);
+      return res.json({ token: ptok, user: publicUser(pu) });
+    }
     const r = await pool.query('SELECT * FROM users WHERE email=$1 AND gym_id=$2', [(email || '').toLowerCase().trim(), req.gym.id]);
-    const u = r.rows[0];
+    let u = r.rows[0];
+    if (!u) {
+      // platform admin has gym_id NULL — accepted only when the host is the platform root
+      const pa = await pool.query(`SELECT * FROM users WHERE email=$1 AND role='platform_admin'`, [(email || '').toLowerCase().trim()]);
+      u = pa.rows[0];
+    }
     if (!u || !(await bcrypt.compare(password || '', u.password_hash))) {
       return res.status(401).json({ error: 'Wrong email or password' });
     }
@@ -311,7 +338,7 @@ app.get('/api/members', auth, checkTenantAuth, adminOnly, async (req, res) => {
   res.json(r.rows);
 });
 
-app.post('/api/members', auth, checkTenantAuth, adminOnly, async (req, res) => {
+app.post('/api/members', auth, checkTenantAuth, adminOnly, requireLiveGym, async (req, res) => {
   try {
     if (!req.gym) return res.status(404).json({ error: 'Gym not found' });
     const { name, email, phone, password, plan_id, trainer_id, expiry_date, photo } = req.body;
@@ -345,7 +372,7 @@ app.post('/api/members', auth, checkTenantAuth, adminOnly, async (req, res) => {
   }
 });
 
-app.put('/api/members/:id', auth, checkTenantAuth, adminOnly, async (req, res) => {
+app.put('/api/members/:id', auth, checkTenantAuth, adminOnly, requireLiveGym, async (req, res) => {
   try {
     const { name, email, phone, plan_id, trainer_id, expiry_date, join_date, photo } = req.body;
     const cur = (await pool.query(`SELECT * FROM users WHERE id=$1 AND role='member' AND gym_id=$2`, [req.params.id, req.gym.id])).rows[0];
@@ -372,7 +399,7 @@ app.put('/api/members/:id', auth, checkTenantAuth, adminOnly, async (req, res) =
   }
 });
 
-app.put('/api/members/:id/password', auth, checkTenantAuth, adminOnly, async (req, res) => {
+app.put('/api/members/:id/password', auth, checkTenantAuth, adminOnly, requireLiveGym, async (req, res) => {
   try {
     const { password } = req.body;
     if (!password) return res.status(400).json({ error: 'Password required' });
@@ -384,7 +411,7 @@ app.put('/api/members/:id/password', auth, checkTenantAuth, adminOnly, async (re
   }
 });
 
-app.delete('/api/members/:id', auth, checkTenantAuth, adminOnly, async (req, res) => {
+app.delete('/api/members/:id', auth, checkTenantAuth, adminOnly, requireLiveGym, async (req, res) => {
   try {
     await pool.query(`DELETE FROM users WHERE id=$1 AND role='member' AND gym_id=$2`, [req.params.id, req.gym.id]);
     res.json({ ok: true });
@@ -425,7 +452,7 @@ app.get('/api/inquiries', auth, checkTenantAuth, adminOnly, async (req, res) => 
   res.json(r.rows);
 });
 
-app.put('/api/inquiries/:id', inquiryLimiter, async (req, res) => {
+app.put('/api/inquiries/:id', inquiryLimiter, requireLiveGym, async (req, res) => {
   // used by the join flow to attach the chosen plan and payment mode
   try {
     if (!req.gym) return res.status(404).json({ error: 'Gym not found for this address' });
@@ -576,7 +603,7 @@ app.get('/api/plans', async (req, res) => {  // public: shown on the member webs
   res.json(r.rows);
 });
 
-app.post('/api/plans', auth, checkTenantAuth, adminOnly, async (req, res) => {
+app.post('/api/plans', auth, checkTenantAuth, adminOnly, requireLiveGym, async (req, res) => {
   try {
     const { name, duration_days, price } = req.body;
     if (!name || !duration_days || !price) return res.status(400).json({ error: 'Name, days and price are required' });
@@ -588,7 +615,7 @@ app.post('/api/plans', auth, checkTenantAuth, adminOnly, async (req, res) => {
   } catch (e) { console.error(e); res.status(500).json({ error: 'Server error' }); }
 });
 
-app.delete('/api/plans/:id', auth, checkTenantAuth, adminOnly, async (req, res) => {
+app.delete('/api/plans/:id', auth, checkTenantAuth, adminOnly, requireLiveGym, async (req, res) => {
   try {
     await pool.query('DELETE FROM plans WHERE id=$1 AND gym_id=$2', [req.params.id, req.gym.id]);
     res.json({ ok: true });
@@ -602,7 +629,7 @@ app.get('/api/trainers', async (req, res) => {  // public: shown on the member w
   res.json(r.rows);
 });
 
-app.post('/api/trainers', auth, checkTenantAuth, adminOnly, async (req, res) => {
+app.post('/api/trainers', auth, checkTenantAuth, adminOnly, requireLiveGym, async (req, res) => {
   try {
     const { name, phone, specialty } = req.body;
     if (!name) return res.status(400).json({ error: 'Name is required' });
@@ -614,7 +641,7 @@ app.post('/api/trainers', auth, checkTenantAuth, adminOnly, async (req, res) => 
   } catch (e) { console.error(e); res.status(500).json({ error: 'Server error' }); }
 });
 
-app.delete('/api/trainers/:id', auth, checkTenantAuth, adminOnly, async (req, res) => {
+app.delete('/api/trainers/:id', auth, checkTenantAuth, adminOnly, requireLiveGym, async (req, res) => {
   try {
     await pool.query('DELETE FROM trainers WHERE id=$1 AND gym_id=$2', [req.params.id, req.gym.id]);
     res.json({ ok: true });
@@ -632,7 +659,7 @@ app.get('/api/payments', auth, checkTenantAuth, adminOnly, async (req, res) => {
   res.json(r.rows);
 });
 
-app.post('/api/payments', auth, checkTenantAuth, adminOnly, async (req, res) => {
+app.post('/api/payments', auth, checkTenantAuth, adminOnly, requireLiveGym, async (req, res) => {
   const { user_id, amount, method, note, extend } = req.body;
   try {
     // member must belong to this gym
@@ -676,7 +703,7 @@ app.post('/api/payments', auth, checkTenantAuth, adminOnly, async (req, res) => 
   }
 });
 
-app.delete('/api/payments/:id', auth, checkTenantAuth, adminOnly, async (req, res) => {
+app.delete('/api/payments/:id', auth, checkTenantAuth, adminOnly, requireLiveGym, async (req, res) => {
   try {
     await pool.query('DELETE FROM payments WHERE id=$1 AND gym_id=$2', [req.params.id, req.gym.id]);
     res.json({ ok: true });
@@ -684,7 +711,7 @@ app.delete('/api/payments/:id', auth, checkTenantAuth, adminOnly, async (req, re
 });
 
 // ---------- attendance ----------
-app.post('/api/attendance', auth, checkTenantAuth, async (req, res) => {
+app.post('/api/attendance', auth, requireLiveGym, checkTenantAuth, async (req, res) => {
   try {
     const uid = req.user.role === 'admin' ? Number(req.body.user_id) : req.user.id;
     if (!uid) return res.status(400).json({ error: 'Member is required' });
@@ -758,7 +785,7 @@ app.get('/api/notifications/config', auth, checkTenantAuth, adminOnly, (req, res
   res.json({ email: !!mailer, whatsapp: !!(WA_TOKEN && WA_PHONE_ID) });
 });
 
-app.post('/api/notifications/:id/resend', auth, checkTenantAuth, adminOnly, async (req, res) => {
+app.post('/api/notifications/:id/resend', auth, checkTenantAuth, adminOnly, requireLiveGym, async (req, res) => {
   try {
     const n = (await pool.query('SELECT * FROM notifications WHERE id=$1 AND gym_id=$2', [req.params.id, req.gym.id])).rows[0];
     if (!n || !n.dest) return res.status(404).json({ error: 'Notification or recipient not found' });

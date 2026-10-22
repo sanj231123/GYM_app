@@ -51,10 +51,10 @@ function clearAuthCookie(res) {
 //   3. single-gym fallback — until more gyms exist, the only gym serves
 //      the bare domain too (localhost, jainifitness.test)
 async function resolveTenant(req, res, next) {
+  const raw = (req.get('host') || '').toLowerCase().split(':')[0];
+  const plat = (process.env.PLATFORM_DOMAIN || '').trim().toLowerCase();
   let slug = (req.get('x-gym-slug') || '').trim().toLowerCase();
   if (!slug) {
-    const raw = (req.get('host') || '').toLowerCase().split(':')[0];
-    const plat = (process.env.PLATFORM_DOMAIN || '').trim().toLowerCase();
     if (raw.endsWith('.localhost')) slug = raw.slice(0, -('.localhost'.length));
     else if (plat && raw !== plat && raw.endsWith('.' + plat)) slug = raw.slice(0, -(plat.length + 1));
   }
@@ -63,9 +63,12 @@ async function resolveTenant(req, res, next) {
     if (slug) {
       gym = await pool.query('SELECT * FROM gyms WHERE slug=$1', [slug]);
       if (!gym.rows.length) return res.status(404).json({ error: 'Gym not found' });
+    } else if (plat && raw === plat) {
+      // platform root on a live domain → no tenant (landing page / platform admin)
+      req.gym = null; next(); return;
     } else {
-      const c = await pool.query('SELECT count(*)::int AS c FROM gyms');
-      if (c.rows[0].c === 1) gym = await pool.query('SELECT * FROM gyms LIMIT 1');
+      // anywhere else (localhost, jainifitness.test, bare domain): the seed gym
+      gym = await pool.query('SELECT * FROM gyms ORDER BY id LIMIT 1');
     }
     if (gym && gym.rows[0]) {
       req.gym = gym.rows[0];
@@ -79,6 +82,21 @@ async function resolveTenant(req, res, next) {
 function checkTenantAuth(req, res, next) {
   if (req.gym && req.user && req.user.gym_id && req.user.gym_id !== req.gym.id) {
     return res.status(403).json({ error: 'Account does not belong to this gym' });
+  }
+  next();
+}
+
+// blocks WRITE routes for gyms whose trial or subscription has ended.
+// Reading (dashboard, public site, login) stays open; the owner sees a
+// clear "subscription required" message instead of a broken app.
+function requireLiveGym(req, res, next) {
+  if (!req.gym) return next(); // platform-level request
+  const g = req.gym;
+  const expired = g.status === 'suspended'
+    || (g.status === 'trial' && !(g.trial_ends_at && new Date(g.trial_ends_at) > new Date()))
+    || (g.status === 'active' && g.paid_until && new Date(g.paid_until) <= new Date());
+  if (expired) {
+    return res.status(402).json({ error: 'Subscription required — please contact the platform owner', code: 'SUBSCRIPTION_REQUIRED' });
   }
   next();
 }
@@ -105,7 +123,7 @@ function errorHandler(err, req, res, next) {
 
 module.exports = {
   auth, adminOnly, setAuthCookie, clearAuthCookie,
-  resolveTenant, checkTenantAuth,
+  resolveTenant, checkTenantAuth, requireLiveGym,
   globalLimiter, authLimiter, inquiryLimiter, razorpayLimiter,
   notFound, errorHandler, COOKIE_NAME,
 };
