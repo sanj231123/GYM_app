@@ -724,3 +724,24 @@ body {
   color: var(--primary, #2563eb); font-size: 13px; font-weight: 600;
 }
 .link-btn:hover { text-decoration: underline; }
+
+/* ---------- Analytics tab charts ---------- */
+.chart-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 16px; }
+.chart-card { background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
+  padding: 18px 18px 12px; }
+.chart-card h3 { margin: 0 0 2px; font-size: 15px; }
+.chart-sub { margin: 0 0 10px; font-size: 12px; color: var(--muted); }
+.chart-wrap { position: relative; }
+.chart-tick { font-size: 11px; fill: var(--muted); }
+.chart-val { font-size: 11px; font-weight: 600; fill: var(--text); }
+.chart-tip { position: absolute; transform: translate(-50%, -130%); pointer-events: none;
+  background: var(--text); color: var(--panel); font-size: 12px; padding: 4px 9px;
+  border-radius: 6px; white-space: nowrap; z-index: 3; }
+.plan-bars { display: grid; gap: 10px; padding: 6px 2px 8px; }
+.plan-bar-row { display: grid; grid-template-columns: 130px 1fr 34px; align-items: center; gap: 10px; }
+.plan-bar-name { font-size: 13px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.plan-bar-track { height: 14px; background: var(--off-bg); border-radius: 7px; overflow: hidden; }
+.plan-bar-fill { display: block; height: 100%; background: var(--primary); border-radius: 7px;
+  transition: width .4s ease; min-width: 2px; }
+.plan-bar-val { font-size: 13px; font-weight: 600; color: var(--text); text-align: right; }
+@media (max-width: 480px) { .plan-bar-row { grid-template-columns: 88px 1fr 30px; } }

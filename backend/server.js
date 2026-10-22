@@ -921,6 +921,49 @@ app.get('/api/reports/summary', auth, checkTenantAuth, adminOnly, async (req, re
   res.json(r.rows[0]);
 });
 
+// ---------- analytics (admin: charts data, gym-scoped) ----------
+app.get('/api/analytics', auth, checkTenantAuth, adminOnly, async (req, res) => {
+  const g = req.gym.id;
+  // labels for the last n months, ending with the current one
+  const months = (n) => {
+    const out = [];
+    const d = new Date();
+    for (let i = n - 1; i >= 0; i--) {
+      const m = new Date(d.getFullYear(), d.getMonth() - i, 1);
+      const ym = m.getFullYear() + '-' + String(m.getMonth() + 1).padStart(2, '0');
+      out.push({ ym, label: m.toLocaleString('en-IN', { month: 'short' }) });
+    }
+    return out;
+  };
+  const m6 = months(6);
+  const since6 = m6[0].ym + '-01';
+  const [rev, mem, chk, plans] = await Promise.all([
+    pool.query(`SELECT to_char(paid_on,'YYYY-MM') AS ym, sum(amount)::float AS total
+                FROM payments WHERE gym_id=$1 AND paid_on >= $2 GROUP BY 1`, [g, since6]),
+    pool.query(`SELECT to_char(join_date,'YYYY-MM') AS ym, count(*)::int AS c
+                FROM users WHERE gym_id=$1 AND role='member' AND join_date >= $2 GROUP BY 1`, [g, since6]),
+    pool.query(`SELECT checkin_at::date::text AS d, count(*)::int AS c
+                FROM attendance WHERE gym_id=$1 AND checkin_at::date > CURRENT_DATE - 14 GROUP BY 1`, [g]),
+    pool.query(`SELECT p.name, count(*)::int AS c FROM users u JOIN plans p ON p.id = u.plan_id
+                WHERE u.gym_id=$1 AND u.role='member' GROUP BY 1 ORDER BY c DESC NULLS LAST`, [g]),
+  ]);
+  const byKey = (rows, k) => Object.fromEntries(rows.rows.map(r => [r[k], r]));
+  const revM = byKey(rev, 'ym'), memM = byKey(mem, 'ym');
+  const days = [];
+  for (let i = 13; i >= 0; i--) {
+    const d = new Date(Date.now() - i * 86400000);
+    days.push({ date: d.toISOString().slice(0, 10),
+      label: d.toLocaleDateString('en-IN', { day: 'numeric', month: 'short' }) });
+  }
+  const chkD = byKey(chk, 'd');
+  res.json({
+    revenue_by_month: m6.map(m => ({ label: m.label, value: (revM[m.ym] || {}).total || 0 })),
+    members_by_month: m6.map(m => ({ label: m.label, value: (memM[m.ym] || {}).c || 0 })),
+    checkins: days.map(d => ({ label: d.label, value: (chkD[d.date] || {}).c || 0 })),
+    plans: plans.rows.map(r => ({ label: r.name, value: r.c })),
+  });
+});
+
 // listen only after the schema is ready (avoids the cold-start race)
 init()
   .then(() => {

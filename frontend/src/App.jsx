@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react'
 import { login, register, logout, me, changePassword, forgotPassword, resetPassword, get, post, put, del } from './api'
 import { PlatformPage, PlatformPanel } from './Platform'
 import { TenantProvider, useGym } from './tenant'
+import Analytics from './Analytics'
 
 // shows a friendly page on any render crash instead of a blank white screen
 class AppBoundary extends React.Component {
@@ -622,7 +623,7 @@ function Auth({ onLogin }) {
 }
 
 // ---------- Admin panel ----------
-const TABS = ['Dashboard', 'Members', 'Payments', 'Plans', 'Trainers', 'Notifications', 'Settings']
+const TABS = ['Dashboard', 'Members', 'Payments', 'Plans', 'Trainers', 'Notifications', 'Analytics', 'Settings']
 
 // per-page background photo (behind the whole admin page)
 const TAB_BG = {
@@ -632,6 +633,7 @@ const TAB_BG = {
   Plans: '/bg-plans.jpg',
   Trainers: '/bg-trainers.jpg',
   Notifications: '/banner.jpg',
+  Analytics: '/bg-payments.jpg',
   Settings: '/bg-plans.jpg',
 }
 
@@ -683,6 +685,7 @@ function AdminPanel({ user, onLogout, onChangePwd }) {
         {tab === 'Plans' && <Plans />}
         {tab === 'Trainers' && <Trainers />}
         {tab === 'Notifications' && <Notifications />}
+        {tab === 'Analytics' && <Analytics />}
         {tab === 'Settings' && <GymSettings />}
       </main>
     </div>

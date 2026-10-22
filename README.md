@@ -307,6 +307,10 @@ check"** step proves one gym can never read or write another gym's data.
 - **Multi-tenant SaaS** — per-gym branding, data isolation, trials, platform admin panel (see above)
 - **Custom message templates** — per-gym welcome / payment / inquiry texts with `{{placeholders}}` in Settings
 - **Platform fee automation** — Razorpay subscription per gym; charges extend the paid period automatically
+- **Analytics** (admin) — revenue per month, new members per month, daily check-ins (14 days),
+  members per plan — inline SVG charts with hover tooltips
+- **PWA** — installable on phone/desktop; works offline for the cached app shell (`manifest.webmanifest` +
+  `sw.js` service worker; `/api` is always fetched live)
 
 ---
 
