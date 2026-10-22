@@ -13,9 +13,11 @@ services:
 
   backend:
     build: ./backend
+    env_file: .env
     environment:
       DATABASE_URL: postgres://${POSTGRES_USER:-gym}:${POSTGRES_PASSWORD:-gym123}@db:5432/${POSTGRES_DB:-gymdb}
       JWT_SECRET: ${JWT_SECRET:-gymfit_dev_secret_change_me}
+      APP_URL: ${APP_URL:-http://localhost:2311}
     depends_on:
       - db
     restart: unless-stopped
@@ -23,7 +25,8 @@ services:
   web:
     build: ./frontend
     ports:
-      - "2311:80"
+      - "80:80"      # no port in the URL (http://jainifitness.test)
+      - "2311:80"    # backup: old route (http://localhost:2311)
     depends_on:
       - backend
     restart: unless-stopped
