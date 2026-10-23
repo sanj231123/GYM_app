@@ -829,6 +829,10 @@ app.post('/api/attendance', auth, requireLiveGym, checkTenantAuth, async (req, r
     const exp = u.rows[0].expiry; // "YYYY-MM-DD" ya null
     const today = new Date().toISOString().slice(0, 10);
     if (exp && exp < today) return res.status(400).json({ error: 'Membership expired, please renew' });
+    // one check-in per member per day (server-side guard, not just UI)
+    const existing = await pool.query(
+      `SELECT id, checkin_at FROM attendance WHERE user_id=$1 AND checkin_at::date = CURRENT_DATE ORDER BY id LIMIT 1`, [uid]);
+    if (existing.rows.length) return res.json({ ...existing.rows[0], already_today: true });
     const r = await pool.query('INSERT INTO attendance (user_id, gym_id) VALUES ($1,$2) RETURNING *', [uid, req.gym.id]);
     res.json(r.rows[0]);
   } catch (e) { console.error(e); res.status(500).json({ error: 'Server error' }); }
