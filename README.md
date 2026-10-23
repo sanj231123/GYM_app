@@ -428,6 +428,7 @@ The manual workflows (**Mark paid**, suspend/activate) keep working as before.
 ## Notes
 
 - `photos/` and `.env` are git-ignored.
+- Join-page slider photos (join-slide-*.jpg) come from [Pexels](https://www.pexels.com/license/) (free license, no attribution required).
 - Frontend is built **inside** the Docker image, so code changes need a container rebuild
   (done automatically by CI/CD, or manually with `sudo docker compose up -d --build`).
 - Backend API base is `/api` (Nginx proxies `admin.jainifitness.test/api` and main-site

@@ -27,6 +27,18 @@ function auth(req, res, next) {
   next();
 }
 
+// sets req.user only when a valid session cookie/bearer is present — never blocks
+function optionalAuth(req, res, next) {
+  const h = req.headers.authorization || '';
+  const token = (h.startsWith('Bearer ') ? h.slice(7) : '') || readToken(req.headers.cookie || '');
+  if (token) {
+    try {
+      req.user = jwt.verify(token, JWT_SECRET);
+    } catch { /* anonymous checkout stays allowed */ }
+  }
+  next();
+}
+
 const adminOnly = (req, res, next) =>
   req.user && req.user.role === 'admin' ? next() : res.status(403).json({ error: 'Admin access required' });
 
@@ -122,7 +134,7 @@ function errorHandler(err, req, res, next) {
 }
 
 module.exports = {
-  auth, adminOnly, setAuthCookie, clearAuthCookie,
+  auth, optionalAuth, adminOnly, setAuthCookie, clearAuthCookie,
   resolveTenant, checkTenantAuth, requireLiveGym,
   globalLimiter, authLimiter, inquiryLimiter, razorpayLimiter,
   notFound, errorHandler, COOKIE_NAME,

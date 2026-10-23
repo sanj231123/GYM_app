@@ -965,3 +965,33 @@ body {
 .avatar-click:hover::after {
   box-shadow: inset 0 0 0 3px var(--primary, #4657e7);
 }
+
+/* ==== join page: right-side photo slider ==== */
+.join-grid { display: flex; gap: 36px; align-items: stretch; }
+.join-main { flex: 1 1 640px; min-width: 0; max-width: 760px; }
+.join-visual {
+  flex: 1 1 380px;
+  align-self: center;
+  position: relative;
+  min-height: 480px;
+  border-radius: 22px;
+  overflow: hidden;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.45);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+.join-visual img {
+  position: absolute; inset: 0; width: 100%; height: 100%;
+  object-fit: cover; opacity: 0; transform: scale(1.04);
+  transition: opacity 0.9s ease, transform 6s linear;
+}
+.join-visual img.on { opacity: 1; transform: scale(1); }
+.join-visual-cap {
+  position: absolute; left: 0; right: 0; bottom: 0;
+  padding: 42px 20px 14px;
+  background: linear-gradient(transparent, rgba(10, 11, 16, 0.88));
+  color: #fff; font-weight: 600; letter-spacing: 0.3px; font-size: 14px;
+}
+@media (max-width: 980px) { .join-visual { display: none; } .join-main { max-width: 100%; } }
+
+/* ==== member page: pay online button ==== */
+.pay-online-btn { margin-left: 12px; border-radius: 999px; padding: 12px 22px; font-size: 14px; }

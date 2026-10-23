@@ -290,6 +290,21 @@ function Soc({ kind }) {
 // ---------- join flow page (opens in its own tab, opened from inquiry/enroll) ----------
 const JOIN_URL = '/?page=join'
 
+function JoinVisual() {
+  const slides = ['/join-slide-1.jpg', '/join-slide-2.jpg']
+  const [i, setI] = useState(0)
+  useEffect(() => {
+    const t = setInterval(() => setI(x => (x + 1) % slides.length), 4200)
+    return () => clearInterval(t)
+  }, [])
+  return (
+    <div className="join-visual" aria-hidden="true">
+      {slides.map((s, k) => <img key={k} src={s} className={k === i ? 'on' : ''} alt="" />)}
+      <div className="join-visual-cap">Train like a pro — strength, cardio and yoga under one roof</div>
+    </div>
+  )
+}
+
 function JoinPage() {
   const g = useGym()
   const [user, setUser] = useState(null)
@@ -363,6 +378,8 @@ function JoinPage() {
     <div className="af-site pub-site" style={{ '--accent': g.primary_color || undefined }}>
       <SiteNav user={user} onLogout={() => { logout().catch(() => {}); setUser(null) }} />
       <section id="top" className="sec join-top">
+        <div className="join-grid">
+        <div className="join-main">
         <span className="sec-kicker">{g.name ? ('JOIN ' + g.name.toUpperCase()) : 'JOIN US'}</span>
         <h2 className="sec-title">Membership Inquiry</h2>
         <div className="join-steps" style={{ display: 'flex', gap: 10 }}>
@@ -432,6 +449,9 @@ function JoinPage() {
             <button className="btn primary" onClick={() => { location.href = '/' }}>Back to Home</button>
           </div>
         )}
+        </div>
+        {step === 1 && <JoinVisual />}
+        </div>
       </section>
       <ComboRow />
       <Testimonials />
@@ -1252,6 +1272,37 @@ function MemberHome({ user, onLogout, onChangePwd }) {
     r.readAsDataURL(file)
   }
 
+  const loadRzp = () => new Promise((resolve, reject) => {
+    if (window.Razorpay) return resolve()
+    const s = document.createElement('script')
+    s.src = 'https://checkout.razorpay.com/v1/checkout.js'
+    s.onload = resolve
+    s.onerror = () => reject(new Error('Could not load Razorpay checkout'))
+    document.body.appendChild(s)
+  })
+
+  const payOnline = async () => {
+    try {
+      const o = await post('/razorpay/order', {})
+      await loadRzp()
+      new window.Razorpay({
+        key: o.key_id,
+        order_id: o.order_id,
+        amount: o.amount,
+        currency: 'INR',
+        name: g.name || 'GymFit',
+        description: (o.plan && o.plan.name) || 'Membership plan',
+        theme: { color: g.primary_color || '#4657e7' },
+        handler: async (rzp) => {
+          try {
+            await post('/razorpay/verify', { order_id: rzp.razorpay_order_id, payment_id: rzp.razorpay_payment_id, signature: rzp.razorpay_signature })
+            load()
+          } catch (e2) { alert('Payment recorded, but verification failed — contact the gym. ' + e2.message) }
+        },
+      }).open()
+    } catch (e2) { alert(e2.message) }
+  }
+
   return (
     <div id="top" className="member-bg af-site">
       <SiteNav user={user} onLogout={onLogout} onChangePwd={onChangePwd} />
@@ -1277,6 +1328,9 @@ function MemberHome({ user, onLogout, onChangePwd }) {
             <button className={'hero-btn ' + (d.checked_today ? '' : 'pulse')} onClick={checkin} disabled={d.checked_today > 0}>
               {d.checked_today ? '✓ Checked in today — keep going!' : 'Check-in Now'}
             </button>
+            {d.plan_name && d.plan_id && (
+              <button className="btn primary pay-online-btn" onClick={payOnline}>⚡ Pay {d.plan_name} Online</button>
+            )}
             <label className="hero-link">Change photo
               <input type="file" accept="image/*" onChange={pickSelf} style={{ display: 'none' }} />
             </label>
