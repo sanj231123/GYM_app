@@ -117,9 +117,11 @@ function requireLiveGym(req, res, next) {
 const limiter = ({ windowMs, max, skip }) =>
   rateLimit({ windowMs, max, standardHeaders: true, legacyHeaders: false, skip });
 
-const globalLimiter = limiter({ windowMs: 15 * 60 * 1000, max: 300 });
-const authLimiter = limiter({ windowMs: 15 * 60 * 1000, max: 10 });
-const inquiryLimiter = limiter({ windowMs: 15 * 60 * 1000, max: 20 });
+// generous enough for many members behind one shared Wi-Fi IP, still tight
+// enough to stop credential-brute-force (login attempts, not logins)
+const globalLimiter = limiter({ windowMs: 15 * 60 * 1000, max: 2000 });
+const authLimiter = limiter({ windowMs: 15 * 60 * 1000, max: 50 });
+const inquiryLimiter = limiter({ windowMs: 15 * 60 * 1000, max: 100 });
 const razorpayLimiter = limiter({ windowMs: 15 * 60 * 1000, max: 30 });
 
 const notFound = (req, res) => res.status(404).json({ error: 'Not found' });
