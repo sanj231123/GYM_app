@@ -599,7 +599,7 @@ app.post('/api/razorpay/verify', razorpayLimiter, async (req, res) => {
             // extend the membership expiry by the plan duration (same renew rule as admin payments)
             if (inq.duration_days) {
               await pool.query(
-                `UPDATE users SET expiry_date = GREATEST(CURRENT_DATE, COALESCE(expiry_date, CURRENT_DATE)) + $1 WHERE id=$2`,
+                `UPDATE users SET expiry_date = GREATEST(CURRENT_DATE, COALESCE(expiry_date, CURRENT_DATE)) + $1::int WHERE id=$2`,
                 [inq.duration_days, mr.rows[0].id]
               );
             }
@@ -780,7 +780,7 @@ app.post('/api/payments', auth, checkTenantAuth, adminOnly, requireLiveGym, asyn
       if (u.rows[0] && u.rows[0].duration_days) {
         await pool.query(
           `UPDATE users
-           SET expiry_date = GREATEST(CURRENT_DATE, COALESCE(expiry_date, CURRENT_DATE)) + $2
+           SET expiry_date = GREATEST(CURRENT_DATE, COALESCE(expiry_date, CURRENT_DATE)) + $2::int
            WHERE id=$1`, [user_id, u.rows[0].duration_days]);
       }
     }
