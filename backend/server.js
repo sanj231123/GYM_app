@@ -1007,6 +1007,16 @@ init()
   .then(() => {
     app.use(notFound);
     app.use(errorHandler);
-    app.listen(PORT, () => console.log('GymFit API listening on port', PORT));
+    const server = app.listen(PORT, () => console.log('GymFit API listening on port', PORT));
+
+    // graceful shutdown — on a rolling deploy (docker/K8s/AWS) the SIGTERM
+    // lets in-flight requests finish before the process exits
+    const shutdown = async (sig) => {
+      console.log(`${sig} received — draining requests, closing DB pool`);
+      server.close();
+      try { await pool.end(); } finally { process.exit(0); }
+    };
+    process.on('SIGTERM', () => shutdown('SIGTERM'));
+    process.on('SIGINT', () => shutdown('SIGINT'));
   })
   .catch((e) => { console.error('DB init failed:', e); process.exit(1); });

@@ -391,7 +391,43 @@ backend upstream at the backend service and set the database URL in `.env`.
 
 ---
 
+## Scaling — from laptop to big server to AWS (no code changes needed)
+
+The app is built to be lifted onto bigger hardware as-is. What is stateless by design:
+
+- **All sessions are JWTs in cookies** — no server memory/session store, so any
+  number of backend instances can serve any user.
+- **All data (including member photos) lives in Postgres** — no per-container
+  uploads directory to sync.
+- **Graceful shutdown (SIGTERM)** — a container lets in-flight requests finish
+  and closes its DB pool, so rolling updates drop zero requests.
+
+Growth path, in order:
+
+| Stage | When needed | What to do |
+|-------|-------------|-----------|
+| 1. Current VPS/laptop | up to ~thousands of members | nothing — run as-is |
+| 2. Bigger single VPS (4–8 GB) | a few gyms online | same commands; Postgres tuning is in `docker-compose.yml` |
+| 3. Split DB or managed DB (RDS/Cloud SQL) | Postgres becomes the bottleneck | set `DATABASE_URL` of the backend to the managed DB, restore backup there |
+| 4. Multiple backend instances | real traffic spikes | run 2+ backend containers behind any load balancer; each instance has its own DB pool and JWT handling, sessions just work |
+
+Notes for stage 3–4:
+
+- Rate-limit counters are per-instance memory by default. For exact global
+  limits behind a load balancer, swap in a Redis store (express-rate-limit has
+  `rate-limit-redis`) — a one-line change in `backend/middleware.js`.
+- Migrations run at boot and are safe to re-run; when many instances start
+  simultaneously on a brand-new database, let one instance boot first
+  (normal rolling deploy order) and the rest follow.
+- `docker-compose.prod.yml` + Caddy already handles HTTPS + nightly backups on
+  any of these stages.
+- Migrations run at boot; the app listens only after the schema is ready
+  (cold-start race handled in `server.js`).
+
+---
+
 ## Platform fee (auto collection)
+
 
 One month of platform access per gym can be collected automatically instead of
 the manual **Mark paid** button:
