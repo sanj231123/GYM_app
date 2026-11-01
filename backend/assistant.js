@@ -75,7 +75,7 @@ function systemPrompt(gym, ctx) {
 
 MEMBER'S DATA (verified, from the gym database — treat as truth):
 - Name: ${m.name}
-- Plan: ${m.plan_name || 'no plan assigned'}${m.plan_price != null ? ` (₹${m.plan_price} / ${m.duration_days} days)` : ''}
+- Plan: ${m.plan_name ? `${m.plan_name}${m.plan_price != null ? ` (₹${m.plan_price} / ${m.duration_days} days)` : ''}` : 'NONE ASSIGNED — tell the member to pick a plan in the Membership Plans section and pay online; it activates automatically after payment'}
 - Expiry: ${m.expiry_date || 'not set'}${daysLeft !== null ? ` (${daysLeft < 0 ? 'EXPIRED ' + Math.abs(daysLeft) + ' days ago' : daysLeft + ' days left'})` : ''}
 - Trainer: ${m.trainer_name || 'none'}
 - Joined: ${m.join_date || 'unknown'}

@@ -151,20 +151,21 @@ function SectionWrap({ id, kicker, title, children }) {
   )
 }
 
-function PlansPublic({ hideCTA }) {
+function PlansPublic({ hideCTA, choosePay }) {
   const [list, setList] = useState([])
   useEffect(() => { get('/plans').then(setList).catch(() => {}) }, [])
   return (
     <SectionWrap id="plans" kicker="JUMP TO" title="Membership Plans">
       <div className="grid3">
         {list.map(p => (
-          <div key={p.id} className="plan-card">
+          <div key={p.id} className={'plan-card' + (choosePay ? ' plan-choose' : '')}>
             <h3>{p.name}</h3>
             <div className="plan-price">{rupee(p.price)}</div>
             <p className="muted">{p.duration_days} days membership</p>
             <ul className="plan-feat"><li>Full gym access</li><li>Locker facility</li><li>Trainer support</li></ul>
-            {!hideCTA && (
-              <button className="btn primary plan-btn" onClick={() => { location.href = JOIN_URL + '&plan=' + p.id }}>Enroll Now</button>
+            {!hideCTA && (choosePay
+              ? <button className="btn primary plan-btn" onClick={() => choosePay(p)}>⚡ Pay & Start — {rupee(p.price)}</button>
+              : <button className="btn primary plan-btn" onClick={() => { location.href = JOIN_URL + '&plan=' + p.id }}>Enroll Now</button>
             )}
           </div>
         ))}
@@ -1282,6 +1283,30 @@ function MemberHome({ user, onLogout, onChangePwd }) {
     document.body.appendChild(s)
   })
 
+  // plan-less member: pick a plan from the cards and pay to start it
+  const choosePlan = async (p) => {
+    try {
+      const o = await post('/razorpay/order', { plan_id: p.id })
+      await loadRzp()
+      new window.Razorpay({
+        key: o.key_id,
+        order_id: o.order_id,
+        amount: o.amount,
+        currency: 'INR',
+        name: g.name || 'GymFit',
+        description: p.name,
+        theme: { color: g.primary_color || '#4657e7' },
+        handler: async (rzp) => {
+          try {
+            await post('/razorpay/verify', { order_id: rzp.razorpay_order_id, payment_id: rzp.razorpay_payment_id, signature: rzp.razorpay_signature })
+            alert('Payment successful — your ' + p.name + ' is now active! 💪')
+            load()
+          } catch (e2) { alert('Payment recorded, but verification failed — contact the gym. ' + e2.message) }
+        },
+      }).open()
+    } catch (e2) { alert(e2.message) }
+  }
+
   const payOnline = async () => {
     try {
       const o = await post('/razorpay/order', {})
@@ -1318,6 +1343,9 @@ function MemberHome({ user, onLogout, onChangePwd }) {
             <span className="chip chip-dark">{d.trainer_name || 'No trainer'}</span>
             <span className="chip chip-dark">Expiry: {fmt(d.expiry_date)}</span>
           </div>
+          {!d.plan_name && (
+            <p className="no-plan-note">No plan assigned yet — pick a plan below and pay online to start your membership. 👇</p>
+          )}
           <label className="avatar-click" title="Change photo">
             {d.photo ? <img className="avatar-big hero-avatar" src={d.photo} alt="" /> : <div className="avatar-big avatar-fall light">{(d.name || '?')[0]}</div>}
             <span className="cam-badge" aria-hidden="true">
@@ -1352,7 +1380,7 @@ function MemberHome({ user, onLogout, onChangePwd }) {
       <section className="plans-pay-band">
         <div className="dash-split dash-split-band">
           <div className="dash-right dash-right-band">
-            <PlansPublic />
+            <PlansPublic choosePay={(!d.plan_name || !d.plan_id) ? choosePlan : null} />
           </div>
           <div className="dash-left">
             <div className="panel">

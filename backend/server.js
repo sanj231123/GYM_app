@@ -545,7 +545,9 @@ app.post('/api/razorpay/order', optionalAuth, checkTenantAuth, razorpayLimiter, 
     if (!req.gym) return res.status(404).json({ error: 'Gym not found for this address' });
     const { key, secret } = gymRzpKeys(req);
     if (!key || !secret) return res.status(400).json({ error: 'Razorpay keys not configured' });
-    // member flow: an authenticated member pays for their own assigned plan
+    // member flow: a member with an assigned plan pays to renew it; a
+    // plan-less (self-signed-up) member picks a plan on the site and pays to
+    // get their membership started — no admin step needed
     let plan;
     if (req.user && req.user.role === 'member') {
       const m = await pool.query(
@@ -553,8 +555,15 @@ app.post('/api/razorpay/order', optionalAuth, checkTenantAuth, razorpayLimiter, 
          FROM users u LEFT JOIN plans pl ON pl.id = u.plan_id
          WHERE u.id=$1 AND u.gym_id=$2`, [req.user.id, req.gym.id]);
       if (!m.rows.length) return res.status(404).json({ error: 'Member not found' });
-      if (!m.rows[0].name || !m.rows[0].price) return res.status(400).json({ error: 'No plan assigned to your membership yet' });
-      plan = m.rows[0];
+      if (!m.rows[0].name || !m.rows[0].price) {
+        // no assigned plan: the member chooses one (body.plan_id)
+        if (!req.body.plan_id) return res.status(400).json({ error: 'No plan assigned to your membership yet — pick a plan below to get started' });
+        const p = await pool.query('SELECT id, name, price, duration_days FROM plans WHERE id=$1 AND gym_id=$2', [req.body.plan_id, req.gym.id]);
+        if (!p.rows.length) return res.status(404).json({ error: 'Plan not found' });
+        plan = p.rows[0];
+      } else {
+        plan = m.rows[0];
+      }
     } else {
       const p = await pool.query('SELECT * FROM plans WHERE id=$1 AND gym_id=$2', [req.body.plan_id, req.gym.id]);
       if (!p.rows.length) return res.status(404).json({ error: 'Plan not found' });
@@ -571,7 +580,7 @@ app.post('/api/razorpay/order', optionalAuth, checkTenantAuth, razorpayLimiter, 
         amount,
         currency: 'INR',
         receipt: 'g' + req.gym.id + '-' + (req.user ? 'm' + req.user.id : (req.body.inquiry_id || 0)) + '-' + Date.now(),
-        notes: { plan: plan.name, gym: req.gym.slug },
+        notes: { plan: plan.name, gym: req.gym.slug, plan_id: String(plan.id) },
       }),
     });
     if (!r.ok) return res.status(502).json({ error: 'Razorpay order failed' });
@@ -595,17 +604,30 @@ app.post('/api/razorpay/verify', optionalAuth, checkTenantAuth, razorpayLimiter,
         `SELECT u.plan_id, pl.price, pl.duration_days
          FROM users u LEFT JOIN plans pl ON pl.id = u.plan_id
          WHERE u.id=$1 AND u.gym_id=$2`, [req.user.id, req.gym.id]);
-      if (!m.rows.length || !m.rows[0].price) return res.status(400).json({ error: 'No plan assigned to your membership yet' });
+      if (!m.rows.length) return res.status(400).json({ error: 'Member not found' });
+      let chosenPlan = m.rows[0];
+      if (!chosenPlan.price) {
+        // first-time buy: the paid-for plan is bound in the order's server-side
+        // notes (set at order creation) — fetch it, never trust the browser
+        const r = await fetch('https://api.razorpay.com/v1/orders/' + encodeURIComponent(order_id), {
+          headers: { Authorization: 'Basic ' + Buffer.from(key + ':' + secret).toString('base64') },
+        });
+        const planId = r.ok ? (await r.json()).notes.plan_id : null;
+        const p = planId && await pool.query('SELECT price, duration_days FROM plans WHERE id=$1::int AND gym_id=$2', [planId, req.gym.id]);
+        if (!p || !p.rows.length) return res.status(400).json({ error: 'No plan assigned to your membership yet' });
+        chosenPlan = p.rows[0];
+        await pool.query('UPDATE users SET plan_id=$1::int WHERE id=$2', [planId, req.user.id]);
+      }
       const dup = await pool.query(`SELECT 1 FROM payments WHERE gym_id=$1 AND note LIKE $2 LIMIT 1`, [req.gym.id, '%' + String(payment_id) + '%']);
       if (!dup.rows.length) {
         await pool.query(
           `INSERT INTO payments (user_id, amount, method, note, gym_id) VALUES ($1,$2,'upi',$3,$4)`,
-          [req.user.id, Number(m.rows[0].price), 'Razorpay online payment — ' + payment_id, req.gym.id]
+          [req.user.id, Number(chosenPlan.price), 'Razorpay online payment — ' + payment_id, req.gym.id]
         );
-        if (m.rows[0].duration_days) {
+        if (chosenPlan.duration_days) {
           await pool.query(
             `UPDATE users SET expiry_date = GREATEST(CURRENT_DATE, COALESCE(expiry_date, CURRENT_DATE)) + $1::int WHERE id=$2`,
-            [m.rows[0].duration_days, req.user.id]
+            [chosenPlan.duration_days, req.user.id]
           );
         }
       }
