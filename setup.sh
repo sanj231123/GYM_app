@@ -120,7 +120,7 @@ done
 # ---------- 5. browser khol ----------
 echo "→ Browser khol raha hoon…"
 if grep -qi microsoft /proc/version 2>/dev/null; then
-  cmd.exe /c start.exe "${OPEN_URL}" >/dev/null 2>&1 || true   # WSL → Windows browser
+  explorer.exe "${OPEN_URL}" >/dev/null 2>&1 || true           # WSL → Windows browser
 else
   xdg-open "${OPEN_URL}" >/dev/null 2>&1 || true || echo "Manually kholo: ${OPEN_URL}"
 fi
