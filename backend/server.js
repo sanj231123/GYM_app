@@ -134,12 +134,19 @@ async function init() {
       process.exit(1);
     }
     const bootHash = await bcrypt.hash(BOOT_PASS, 12);
+    const firstGym = await pool.query(`SELECT id FROM gyms ORDER BY id LIMIT 1`);
     await pool.query(
-      `INSERT INTO users (name, email, password_hash, role) VALUES ('Admin',$1,$2,'admin')`,
-      [BOOT_EMAIL, bootHash]
+      `INSERT INTO users (name, email, password_hash, role, gym_id) VALUES ('Admin',$1,$2,'admin',$3)`,
+      [BOOT_EMAIL, bootHash, firstGym.rows[0]?.id ?? null]
     );
     console.log('Bootstrap admin created:', BOOT_EMAIL, '— change this password after first login');
   }
+  // repair for older fresh installs; without gym_id the login check
+  // (email AND gym_id) always fails even with the correct password
+  await pool.query(
+    `UPDATE users SET gym_id = (SELECT id FROM gyms ORDER BY id LIMIT 1)
+     WHERE role='admin' AND gym_id IS NULL`
+  );
   // platform admin (manages every gym) — optional, created once from env
   const anyPlatform = await pool.query(`SELECT id FROM users WHERE role='platform_admin' LIMIT 1`);
   if (!anyPlatform.rows.length && (process.env.PLATFORM_ADMIN_EMAIL || '').trim()

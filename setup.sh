@@ -43,7 +43,20 @@ Phir yeh script dobara chalao: bash setup.sh"
 fi
 echo "✓ Docker theek hai"
 
-# ---------- 1. .env (pehli baar) ----------
+# ---------- 1. purani install ka collision-check ----------
+# Compose project ka naam hardcoded hai (jaini-fitness) — is machine pe pehle
+# se install ho to ye script usi ke containers/volumes ko chhu lega. Suraksha!
+if [ ! -f .env ] && [ -z "${COMPOSE_PROJECT_NAME:-}" ]; then
+  if docker volume inspect jaini-fitness_dbdata >/dev/null 2>&1; then
+    warn_box "Is machine pe pehle se GYM app ka data volume hai (jaini-fitness_dbdata), lekin is clone me .env nahi.
+   - Isi machine ki asli install chalani hai → original folder me jao (wahan .env already hai), clone ka use nahi
+   - Fresh sab kuch chahiye → pehle volume hatao:  docker volume rm jaini-fitness_dbdata
+   (Dhyan: volume me saare members/payments ki data hoti hai — sochkar delete karna!)"
+    exit 1
+  fi
+fi
+
+# ---------- 2. .env (pehli baar) ----------
 if [ ! -f .env ]; then
   JWT="$(openssl rand -hex 32 2>/dev/null || head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')"
   ADMIN_PASS="$(head -c 8 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | head -c 10)"
@@ -85,11 +98,11 @@ else
   echo "✓ .env pehle se hai (use hi rahne dete hain)"
 fi
 
-# ---------- 2. build + up ----------
+# ---------- 3. build + up ----------
 echo "→ Containers build + start kar raha hoon (pehli baar me 3-5 min lagenge)…"
 $DOCKER compose up -d --build 2>&1 | tail -3
 
-# ---------- 3. health wait ----------
+# ---------- 4. health wait ----------
 echo "→ Backend ka wait… "
 for i in $(seq 1 60); do
   code="$(curl -s -o /dev/null -w '%{http_code}' "${APP_URL}/api/health" || true)"
@@ -104,7 +117,7 @@ for i in $(seq 1 60); do
   fi
 done
 
-# ---------- 4. browser khol ----------
+# ---------- 5. browser khol ----------
 echo "→ Browser khol raha hoon…"
 if grep -qi microsoft /proc/version 2>/dev/null; then
   cmd.exe /c start.exe "${OPEN_URL}" >/dev/null 2>&1 || true   # WSL → Windows browser
