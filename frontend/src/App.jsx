@@ -3,6 +3,7 @@ import { login, register, logout, me, changePassword, forgotPassword, resetPassw
 import { PlatformPage, PlatformPanel } from './Platform'
 import { TenantProvider, useGym } from './tenant'
 import Analytics from './Analytics'
+import Assistant from './Assistant'
 
 // shows a friendly page on any render crash instead of a blank white screen
 class AppBoundary extends React.Component {
@@ -1377,6 +1378,7 @@ function MemberHome({ user, onLogout, onChangePwd }) {
 
       <ComboRow />
       <ContactSec />
+      <Assistant gymName={g.name || ''} />
     </div>
   )
 }

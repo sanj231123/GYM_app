@@ -48,6 +48,7 @@ app.use(globalLimiter);
 app.use(express.json({ limit: '3mb' }));
 app.use('/api', resolveTenant); // every /api request carries its gym (tenant) context
 app.use('/api/platform', require('./routes-platform')); // self-signup + platform admin
+app.use('/api/me', require('./assistant')); // AI assistant (POST /api/me/assistant)
 
 // ---------- helpers ----------
 const publicUser = (u) => ({

@@ -995,3 +995,70 @@ body {
 
 /* ==== member page: pay online button ==== */
 .pay-online-btn { margin-left: 12px; border-radius: 999px; padding: 12px 22px; font-size: 14px; }
+
+/* ==== AI assistant chat widget (member view) ==== */
+.bot-wrap { position: fixed; right: 18px; bottom: 18px; z-index: 900; font-family: inherit; }
+.bot-fab {
+  width: 56px; height: 56px; border-radius: 50%; border: none; cursor: pointer;
+  background: var(--primary); color: #fff; font-size: 26px; line-height: 1;
+  box-shadow: 0 8px 24px rgba(70, 87, 231, .45);
+  transition: transform .15s ease, box-shadow .15s ease;
+}
+.bot-fab:hover { transform: scale(1.07); box-shadow: 0 10px 28px rgba(70, 87, 231, .55); }
+.bot-fab-open { background: var(--text, #1c2333); font-size: 16px; }
+
+.bot-panel {
+  position: absolute; right: 0; bottom: 70px;
+  width: min(360px, calc(100vw - 32px)); height: min(520px, calc(100vh - 120px));
+  display: flex; flex-direction: column;
+  background: var(--panel); border: 1px solid var(--border); border-radius: 16px;
+  box-shadow: 0 18px 50px rgba(15, 22, 40, .22); overflow: hidden;
+}
+.bot-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 12px 14px; background: var(--primary); color: #fff;
+}
+.bot-head-txt { display: flex; flex-direction: column; }
+.bot-title { font-weight: 700; font-size: 14px; }
+.bot-sub { font-size: 11px; opacity: .85; }
+.bot-x {
+  background: transparent; border: none; color: #fff; font-size: 15px;
+  cursor: pointer; padding: 4px 8px; border-radius: 8px;
+}
+.bot-x:hover { background: rgba(255, 255, 255, .15); }
+
+.bot-msgs { flex: 1; overflow-y: auto; padding: 12px; display: flex; flex-direction: column; gap: 8px; background: var(--bg); }
+.bot-msg {
+  max-width: 85%; padding: 9px 12px; border-radius: 14px; font-size: 13.5px;
+  line-height: 1.45; white-space: pre-wrap; word-break: break-word;
+}
+.bot-ai { align-self: flex-start; background: var(--panel); border: 1px solid var(--border); border-bottom-left-radius: 4px; }
+.bot-me { align-self: flex-end; background: var(--primary); color: #fff; border-bottom-right-radius: 4px; }
+
+.bot-dots { display: flex; gap: 4px; padding: 13px 14px; }
+.bot-dots i {
+  width: 7px; height: 7px; border-radius: 50%; background: var(--muted, #6b7488);
+  animation: bot-bounce 1.2s infinite ease-in-out;
+}
+.bot-dots i:nth-child(2) { animation-delay: .18s; }
+.bot-dots i:nth-child(3) { animation-delay: .36s; }
+@keyframes bot-bounce { 0%, 60%, 100% { transform: translateY(0); opacity: .45; } 30% { transform: translateY(-5px); opacity: 1; } }
+
+.bot-tips { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 12px 4px; background: var(--bg); }
+.bot-tip {
+  border: 1px solid var(--border); background: var(--panel); color: var(--text, #1c2333);
+  border-radius: 999px; padding: 5px 11px; font-size: 11.5px; cursor: pointer;
+}
+.bot-tip:hover { border-color: var(--primary); color: var(--primary); }
+
+.bot-input { display: flex; gap: 8px; padding: 10px; border-top: 1px solid var(--border); background: var(--panel); }
+.bot-input input {
+  flex: 1; border: 1px solid var(--border); border-radius: 10px; padding: 9px 12px;
+  font-size: 13.5px; background: var(--bg); color: var(--text, #1c2333); outline: none;
+}
+.bot-input input:focus { border-color: var(--primary); }
+.bot-send {
+  width: 40px; border: none; border-radius: 10px; cursor: pointer;
+  background: var(--primary); color: #fff; font-size: 15px;
+}
+.bot-send:disabled { opacity: .45; cursor: default; }
